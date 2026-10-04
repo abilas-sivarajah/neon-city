@@ -32,6 +32,9 @@
   .bar > div { height: 100%; }
   .bar.hp { background: #3a0b0b; } .bar.hp > div { background: #c4241f; }
   .bar.armor { background: #2b2b2b; } .bar.armor > div { background: #e4e4e4; }
+  .bar.nitro { background: #0b2630; } .bar.nitro > div { background: linear-gradient(90deg, #22e6ff, #ff2bd6); transition: width .1s linear; }
+  .bar.nitro.full > div { box-shadow: 0 0 8px #22e6ff; }
+  .bar.nitro.locked > div { background: repeating-linear-gradient(45deg, #4a5360 0 6px, #2c333d 6px 12px); box-shadow: none; }
   #money { font-family: Anton, sans-serif; font-size: 38px; line-height: 1; color: #3f9a46; letter-spacing: 1px; }
   #stars { display: flex; gap: 2px; }
 
@@ -79,8 +82,24 @@
   .slot .name { font-family: Anton, sans-serif; font-size: 17px; }
   .slot .ammo { font-size: 15px; font-weight: 700; color: #d0d0d0; }
   #wheelLabel { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); font-family: Anton, sans-serif; font-size: 22px; color: var(--gold); text-shadow: 2px 2px 0 #000; }
-  #pause { position: absolute; inset: 0; background: rgba(6,8,12,0.6); display: flex; align-items: center; justify-content: center; }
-  #pause .panel { padding: 28px 40px; align-items: center; gap: 16px; }
+  #pause { position: absolute; inset: 0; background: rgba(6,8,12,0.72); display: flex; align-items: stretch; justify-content: center; gap: 16px; padding: 24px; box-sizing: border-box; }
+  #pause .mapwrap { position: relative; flex: 1 1 auto; min-width: 0; border: 2px solid #000; background: #16384e; box-shadow: 0 0 0 1px var(--line); }
+  #pmap { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+  #pmap.dragging { cursor: grabbing; }
+  .mapctl { position: absolute; right: 12px; top: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .mapctl button { width: 44px; height: 44px; background: rgba(8,10,14,0.9); color: #fff; border: 2px solid var(--line); border-radius: 4px; font-family: Anton, sans-serif; font-size: 22px; cursor: pointer; }
+  .mapctl button:hover { border-color: var(--gold); }
+  #pause .side { flex: 0 0 300px; padding: 22px; gap: 12px; overflow-y: auto; }
+  #pause .side h2 { font-family: Anton, sans-serif; font-weight: 400; font-size: 19px; color: var(--gold); margin: 6px 0 0; }
+  #markerList { display: flex; flex-direction: column; gap: 6px; }
+  .mk { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 4px 6px 4px 10px; background: var(--btn); border: 1px solid var(--line); border-radius: 4px; font-size: 17px; font-weight: 600; }
+  .mk .dot { width: 22px; height: 22px; border-radius: 50%; border: 2px solid #000; display: flex; align-items: center; justify-content: center; font-family: Anton, sans-serif; font-size: 13px; color: #000; flex: none; }
+  .mk .d { flex: 1; color: #dcdcdc; }
+  .mk button { min-width: 40px; min-height: 34px; background: transparent; color: #ff8a80; border: 1px solid var(--line); border-radius: 4px; font-size: 16px; font-weight: 700; cursor: pointer; }
+  .legend { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; font-size: 15px; color: #cfcfcf; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid #000; display: inline-block; flex: none; }
+  @media (max-width: 760px) { #pause { flex-direction: column; padding: 12px; } #pause .side { flex: 0 0 auto; max-height: 42%; } }
   .primary { min-height: 50px; padding: 8px 34px; background: var(--gold); color: #111; border: 2px solid #000; border-radius: 4px; font-family: Anton, sans-serif; font-size: 24px; letter-spacing: 1px; cursor: pointer; }
   #mute { position: absolute; right: 22px; top: 200px; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center;
     background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.25); border-radius: 50%; color: #fff; cursor: pointer; }
@@ -111,6 +130,7 @@
           <div id="clock" class="outline">13:00</div>
           <div class="bar hp"><div id="hp" style="width:100%"></div></div>
           <div class="bar armor" id="armorBar" style="opacity:0"><div id="armor" style="width:0%"></div></div>
+          <div class="bar nitro" id="nitroBar" hidden><div id="nitro" style="width:100%"></div></div>
         </div>
       </div>
       <div id="money" class="outline">$00000500</div>
@@ -131,10 +151,32 @@
     <div id="hint" hidden></div>
     <div id="wheel" hidden><div id="wheelSlots"></div><div id="wheelLabel"></div></div>
     <div id="pause" hidden>
-      <div class="panel">
-        <div class="title">PAUSE</div>
+      <div class="mapwrap">
+        <canvas id="pmap" aria-label="Karte von Neon City"></canvas>
+        <div class="mapctl">
+          <button type="button" id="zoomIn" aria-label="Hineinzoomen">+</button>
+          <button type="button" id="zoomOut" aria-label="Herauszoomen">−</button>
+          <button type="button" id="mapCenter" aria-label="Auf mich zentrieren">◎</button>
+        </div>
+      </div>
+      <div class="panel side">
+        <div class="title" style="font-size:52px">PAUSE</div>
         <button type="button" class="primary" id="resume">WEITER</button>
-        <div class="muted" id="pauseHint">P drücken oder auf WEITER klicken</div>
+        <div class="muted" id="pauseHint">Esc oder P drücken oder auf WEITER klicken</div>
+        <h2>KARTE</h2>
+        <div class="muted" id="mapHelp">Mausrad oder + / − zoomen · Ziehen verschiebt · Klick setzt eine Markierung · Klick auf eine Markierung oder Rechtsklick entfernt sie</div>
+        <h2>MARKIERUNGEN</h2>
+        <div id="markerList"></div>
+        <button type="button" class="ghost" id="clearMarkers">Alle Markierungen entfernen</button>
+        <h2>LEGENDE</h2>
+        <div class="legend">
+          <span><i style="background:#fff"></i>Du</span><span><i style="background:#22e6ff"></i>Dein Wagen</span>
+          <span><i style="background:#d2382b"></i>Waffen</span><span><i style="background:#33b36b"></i>Späti</span>
+          <span><i style="background:#2f86d6"></i>Lackiererei</span><span><i style="background:#c04fb3"></i>Mode</span>
+          <span><i style="background:#e44848"></i>Klinik</span><span><i style="background:#3557c8"></i>Polizei</span>
+          <span><i style="background:#e2a12b"></i>Tony (Bandenkrieg)</span><span><i style="background:#a14bff"></i>Nova (Kurier)</span>
+          <span><i style="background:#f2c94c"></i>Auftragsziel</span><span><i style="background:#ff3030"></i>Gegner</span>
+        </div>
       </div>
     </div>
     <button type="button" id="mute" aria-label="Ton an oder aus">
@@ -155,8 +197,9 @@
           <div><b>Rechte Maustaste</b> zielen · <b>Linke</b> schießen / schlagen</div>
           <div><b>R</b> nachladen · <b>Tab halten</b> Waffenrad · <b>Mausrad</b> Waffe</div>
           <div><b>F</b> einsteigen / Auto klauen · <b>E</b> Läden, Leute, Aufträge</div>
-          <div>Auto: <b>W/S</b> Gas / Bremse · <b>Leertaste</b> Handbremse · <b>E</b> Hupe</div>
-          <div><b>C</b> zurückschauen · <b>V</b> Kamera · <b>P</b> Pause · <b>M</b> Ton</div>
+          <div>Auto: <b>W/S</b> Gas / Bremse · <b>Leertaste</b> Handbremse · <b>E</b> Hupe · <b>Shift</b> Nitro</div>
+          <div>Flugzeug: <b>W/S</b> Schub · <b>A/D</b> Kurve · <b>↓/↑</b> Nase hoch/runter</div>
+          <div><b>C</b> zurückschauen · <b>V</b> Kamera · <b>P</b> Pause · <b>M</b> Ton · <b>L</b> eigenen Wagen rufen</div>
         </div>
         <div>
           <h2>CONTROLLER</h2>
@@ -164,8 +207,9 @@
           <div><b>LT</b> zielen mit Zielhilfe · <b>RT</b> schießen / schlagen</div>
           <div><b>B</b> nachladen · <b>LB halten</b> Waffenrad · <b>Steuerkreuz ←</b> Waffe</div>
           <div><b>Y</b> einsteigen / Auto klauen · <b>Steuerkreuz →</b> Läden, Leute</div>
-          <div>Auto: <b>RT</b> Gas · <b>LT</b> Bremse · <b>RB</b> Handbremse · <b>L3</b> Hupe · <b>LB</b> Drive-by</div>
-          <div><b>R3</b> zurückschauen · <b>Back</b> Kamera · <b>Start</b> Pause</div>
+          <div>Auto: <b>RT</b> Gas · <b>LT</b> Bremse · <b>RB</b> Handbremse · <b>L3</b> Hupe · <b>LB</b> Drive-by · <b>A</b> Nitro</div>
+          <div>Flugzeug: <b>RT/LT</b> Schub · <b>Linker Stick</b> Kurve und Nase</div>
+          <div><b>R3</b> zurückschauen · <b>Back</b> Kamera · <b>Start</b> Pause · <b>Steuerkreuz ↓</b> Wagen rufen</div>
         </div>
       </div>
       <div class="muted">Kauf dir Waffen bei Kugel &amp; Co., hol dir Aufträge von Tony am Hafen, und wenn die Polizei hinter dir her ist: ab in die Lackiererei.</div>
@@ -194,7 +238,7 @@
   }
 
   const S = {};
-  let queued = false, lastShop, lastDialog, lastWheel;
+  let queued = false, lastShop, lastDialog, lastWheel, lastMarkers;
   function ui(patch) { Object.assign(S, patch); if (!queued) { queued = true; requestAnimationFrame(render); } }
   const text = (id, v) => { const el = $(id); const t = v == null ? '' : String(v); if (el.textContent !== t) el.textContent = t; };
   const show = (id, on) => { $(id).hidden = !on; };
@@ -220,6 +264,7 @@
     text('weapon', S.weapon || 'FAUST'); text('ammo', S.ammo); text('clock', S.clock); text('money', S.money);
     $('hp').style.width = Math.max(0, Math.min(100, S.hp == null ? 100 : S.hp)) + '%';
     const ar = S.armor || 0; $('armor').style.width = Math.max(0, Math.min(100, ar)) + '%'; $('armorBar').style.opacity = ar > 0 ? 1 : 0;
+    show('nitroBar', !!S.nitroOn); $('nitro').style.width = (S.nitro == null ? 100 : S.nitro) + '%'; $('nitroBar').classList.toggle('full', S.nitro >= 100); $('nitroBar').classList.toggle('locked', !!S.nitroLock);
     (S.stars || []).forEach((s, i) => { if (stars[i]) stars[i].setAttribute('fill', s.fill); });
     text('prompt', S.prompt); show('prompt', !!S.prompt);
     text('timer', S.timer); show('timer', !!S.timer);
@@ -265,6 +310,19 @@
     }
     show('wheel', !!S.wheel);
     show('pause', !!S.paused); if (S.pauseHint) text('pauseHint', S.pauseHint);
+    if (S.mapHelp) text('mapHelp', S.mapHelp);
+    if (S.markers !== lastMarkers) {
+      lastMarkers = S.markers; const box = $('markerList'); box.textContent = '';
+      (S.markers || []).forEach((m) => {
+        const row = document.createElement('div'); row.className = 'mk';
+        const dot = document.createElement('span'); dot.className = 'dot'; dot.style.background = m.col; dot.textContent = m.n; row.appendChild(dot);
+        const d = document.createElement('span'); d.className = 'd'; d.textContent = m.label; row.appendChild(d);
+        const b = document.createElement('button'); b.type = 'button'; b.textContent = '✕'; b.setAttribute('aria-label', 'Markierung ' + m.n + ' entfernen'); b.addEventListener('click', () => { m.remove(); $('root').focus(); }); row.appendChild(b);
+        box.appendChild(row);
+      });
+      if (!(S.markers && S.markers.length)) { const e = document.createElement('div'); e.className = 'muted'; e.textContent = 'Noch keine Markierung gesetzt.'; box.appendChild(e); }
+      $('clearMarkers').disabled = !(S.markers && S.markers.length);
+    }
   }
 
   let game = null;
@@ -273,6 +331,10 @@
   if (!game && !S.error) ui({ error: 'Das Spiel konnte nicht geladen werden.' });
   $('start').addEventListener('click', () => { if (game) game.start(); });
   $('resume').addEventListener('click', () => { if (game) game.resume(); });
+  $('zoomIn').addEventListener('click', () => { if (game) game.mapZoom(1.4); });
+  $('zoomOut').addEventListener('click', () => { if (game) game.mapZoom(1 / 1.4); });
+  $('mapCenter').addEventListener('click', () => { if (game) game.mapCenter(); });
+  $('clearMarkers').addEventListener('click', () => { if (game) game.clearMarkers(); });
   $('mute').addEventListener('click', () => { if (game) game.toggleMute(); $('root').focus(); });
   $('shopClose').addEventListener('click', () => { if (game) game.closeMenu(); });
   render();
