@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neon City</title>
+<meta name="description" content="Third-Person-Crime-Sandbox im Browser – Autos klauen, Waffen kaufen, Aufträge erledigen. Mit Controller-Unterstützung.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Barlow+Condensed:wght@500;600;700&family=Pirata+One&display=swap" rel="stylesheet">
+<style>
+  :root { --gold: #f2c94c; --panel: rgba(8,10,14,0.92); --line: #39414f; --btn: #1b2029; --muted: #a9b0bb; }
+  html, body { margin: 0; height: 100%; background: #0b0d12; overflow: hidden; }
+  #root { position: relative; width: 100vw; height: 100vh; min-height: 420px; overflow: hidden; outline: none;
+    font-family: 'Barlow Condensed', sans-serif; color: #fff; user-select: none; -webkit-user-select: none; }
+  #view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
+  #radar { position: absolute; left: 22px; bottom: 22px; width: 200px; height: 200px; pointer-events: none; }
+  [hidden] { display: none !important; }
+  .outline { text-shadow: 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000; }
+  .anton { font-family: Anton, sans-serif; }
+  button { font-family: 'Barlow Condensed', sans-serif; }
+
+  .topright { position: absolute; top: 18px; right: 22px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; pointer-events: none; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .weapon { width: 76px; height: 76px; border-radius: 50%; background: rgba(10,12,16,0.72); border: 3px solid #000;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1; }
+  #weapon { font-family: Anton, sans-serif; font-size: 15px; letter-spacing: .5px; }
+  #ammo { font-size: 15px; font-weight: 700; color: #d9d9d9; margin-top: 4px; }
+  .col { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+  #clock { font-family: Anton, sans-serif; font-size: 34px; line-height: 1; }
+  .bar { width: 150px; height: 12px; border: 2px solid #000; }
+  .bar > div { height: 100%; }
+  .bar.hp { background: #3a0b0b; } .bar.hp > div { background: #c4241f; }
+  .bar.armor { background: #2b2b2b; } .bar.armor > div { background: #e4e4e4; }
+  #money { font-family: Anton, sans-serif; font-size: 38px; line-height: 1; color: #3f9a46; letter-spacing: 1px; }
+  #stars { display: flex; gap: 2px; }
+
+  #prompt { position: absolute; top: 22px; left: 22px; max-width: 340px; padding: 12px 16px; background: rgba(0,0,0,0.78);
+    border-radius: 4px; font-size: 19px; font-weight: 600; line-height: 1.3; pointer-events: none; white-space: pre-line; }
+  #timer { position: absolute; top: 96px; left: 50%; transform: translateX(-50%); font-family: Anton, sans-serif; font-size: 34px; pointer-events: none; }
+  #crosshair { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px 0 0 -11px; border: 2px solid #fff;
+    border-radius: 50%; box-shadow: 0 0 0 1px rgba(0,0,0,0.7); pointer-events: none; }
+  .bottomright { position: absolute; right: 26px; bottom: 26px; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; pointer-events: none; }
+  #zone { font-family: 'Pirata One', serif; font-size: 44px; line-height: 1; color: #f1ead2; transition: opacity .6s; text-shadow: 2px 2px 0 #000, -1px -1px 0 #000; }
+  #vehicle { font-family: Anton, sans-serif; font-size: 26px; line-height: 1; color: #9ec9e8; transition: opacity .6s; text-shadow: 2px 2px 0 #000; }
+  #speed { font-family: Anton, sans-serif; font-size: 30px; line-height: 1; text-shadow: 2px 2px 0 #000; }
+  .center-msg { position: absolute; left: 50%; bottom: 92px; transform: translateX(-50%); width: min(760px, 70%); display: flex;
+    flex-direction: column; align-items: center; gap: 8px; pointer-events: none; text-align: center; }
+  #message { font-size: 25px; font-weight: 700; line-height: 1.25; text-shadow: 2px 2px 0 #000, -1px -1px 0 #000; }
+  #objective { font-size: 21px; font-weight: 600; line-height: 1.25; color: var(--gold); text-shadow: 2px 2px 0 #000; }
+  #big { position: absolute; left: 0; right: 0; top: 34%; display: flex; flex-direction: column; align-items: center; gap: 10px; pointer-events: none; }
+  #bigText { font-family: Anton, sans-serif; font-size: 92px; line-height: 1; letter-spacing: 3px; text-shadow: 4px 4px 0 #000, -2px -2px 0 #000; }
+  #bigSub { font-family: Anton, sans-serif; font-size: 32px; text-shadow: 3px 3px 0 #000; }
+
+  .panel { background: var(--panel); border: 2px solid #000; display: flex; flex-direction: column; gap: 10px; }
+  #shop { position: absolute; left: 40px; top: 50%; transform: translateY(-50%); width: 380px; max-width: calc(100% - 80px); padding: 20px; }
+  #shopTitle { font-family: Anton, sans-serif; font-size: 32px; line-height: 1; color: var(--gold); }
+  #shopSub { font-size: 17px; color: #c9c9c9; }
+  #shopItems, #dlgOptionsCol { display: flex; flex-direction: column; gap: 10px; }
+  .item { display: flex; align-items: center; gap: 12px; min-height: 46px; padding: 8px 12px; background: var(--btn); color: #fff;
+    border: 2px solid var(--line); border-radius: 4px; font-size: 19px; font-weight: 600; text-align: left; cursor: pointer; }
+  .item.sel { background: #2c3445; border-color: var(--gold); }
+  .item:disabled { opacity: .45; cursor: default; }
+  .item .n { font-family: Anton, sans-serif; color: var(--gold); width: 18px; }
+  .item .label { flex: 1; }
+  .item .price { font-family: Anton, sans-serif; color: #5cbf62; }
+  .ghost { min-height: 44px; margin-top: 4px; background: transparent; color: #c9c9c9; border: 1px solid var(--line); border-radius: 4px; font-size: 18px; font-weight: 600; cursor: pointer; }
+  #dialog { position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%); width: min(640px, calc(100% - 48px)); padding: 18px 22px; }
+  #dlgName { font-family: Anton, sans-serif; font-size: 24px; line-height: 1; color: var(--gold); }
+  #dlgText { font-size: 22px; font-weight: 500; line-height: 1.3; }
+  #dlgOptions { display: flex; flex-wrap: wrap; gap: 8px; }
+  #dlgOptions .item { min-height: 44px; padding: 8px 14px; }
+  #hint { position: absolute; top: 22px; left: 50%; transform: translateX(-50%); padding: 8px 14px; background: rgba(0,0,0,0.7); border-radius: 4px; font-size: 17px; font-weight: 600; pointer-events: none; }
+  #wheel { position: absolute; inset: 0; background: rgba(0,0,0,0.35); pointer-events: none; }
+  .slot { position: absolute; width: 104px; height: 104px; margin: -52px 0 0 -52px; box-sizing: border-box; border-radius: 50%; background: rgba(10,12,16,0.85);
+    border: 3px solid #000; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.15; }
+  .slot.sel { background: rgba(242,201,76,0.28); border-color: var(--gold); }
+  .slot.off { opacity: .35; }
+  .slot .name { font-family: Anton, sans-serif; font-size: 17px; }
+  .slot .ammo { font-size: 15px; font-weight: 700; color: #d0d0d0; }
+  #wheelLabel { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); font-family: Anton, sans-serif; font-size: 22px; color: var(--gold); text-shadow: 2px 2px 0 #000; }
+  #pause { position: absolute; inset: 0; background: rgba(6,8,12,0.6); display: flex; align-items: center; justify-content: center; }
+  #pause .panel { padding: 28px 40px; align-items: center; gap: 16px; }
+  .primary { min-height: 50px; padding: 8px 34px; background: var(--gold); color: #111; border: 2px solid #000; border-radius: 4px; font-family: Anton, sans-serif; font-size: 24px; letter-spacing: 1px; cursor: pointer; }
+  #mute { position: absolute; right: 22px; top: 200px; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.25); border-radius: 50%; color: #fff; cursor: pointer; }
+
+  #intro { position: absolute; inset: 0; display: flex; align-items: center; padding: 32px; box-sizing: border-box; background: rgba(6,8,12,0.55); }
+  #intro .panel { max-width: 780px; max-height: 100%; overflow-y: auto; box-sizing: border-box; padding: 28px 32px; gap: 14px; }
+  .title { font-family: Anton, sans-serif; font-size: 64px; line-height: .95; letter-spacing: 2px; text-shadow: 4px 4px 0 #000; }
+  .tag { font-size: 21px; font-weight: 600; color: var(--gold); }
+  .controls { display: flex; flex-wrap: wrap; gap: 14px 32px; font-size: 16px; line-height: 1.38; color: #dcdcdc; }
+  .controls > div { flex: 1 1 300px; display: flex; flex-direction: column; gap: 2px; }
+  .controls h2 { font-family: Anton, sans-serif; font-weight: 400; font-size: 19px; color: var(--gold); margin: 0 0 4px; }
+  .controls b { color: #fff; }
+  .muted { font-size: 16px; line-height: 1.35; color: var(--muted); }
+  #error { font-size: 18px; color: #ff8a80; }
+  @media (max-width: 700px) { .title { font-size: 48px; } #shop { left: 16px; max-width: calc(100% - 32px); } }
+</style>
+</head>
+<body>
+<div id="root">
+  <canvas id="view"></canvas>
+  <canvas id="radar" width="200" height="200" hidden></canvas>
+
+  <div id="hud" hidden>
+    <div class="topright">
+      <div class="row">
+        <div class="weapon"><div id="weapon">FAUST</div><div id="ammo"></div></div>
+        <div class="col">
+          <div id="clock" class="outline">13:00</div>
+          <div class="bar hp"><div id="hp" style="width:100%"></div></div>
+          <div class="bar armor" id="armorBar" style="opacity:0"><div id="armor" style="width:0%"></div></div>
+        </div>
+      </div>
+      <div id="money" class="outline">$00000500</div>
+      <div id="stars"></div>
+    </div>
+    <div id="prompt" hidden></div>
+    <div id="timer" class="outline" hidden></div>
+    <div id="crosshair" hidden></div>
+    <div class="bottomright"><div id="zone"></div><div id="vehicle"></div><div id="speed"></div></div>
+    <div class="center-msg"><div id="message"></div><div id="objective"></div></div>
+    <div id="big" hidden><div id="bigText"></div><div id="bigSub"></div></div>
+    <div id="shop" class="panel" hidden>
+      <div id="shopTitle"></div><div id="shopSub"></div>
+      <div id="shopItems"></div>
+      <button type="button" class="ghost" id="shopClose">Verlassen (E / Esc)</button>
+    </div>
+    <div id="dialog" class="panel" hidden><div id="dlgName"></div><div id="dlgText"></div><div id="dlgOptions"></div></div>
+    <div id="hint" hidden></div>
+    <div id="wheel" hidden><div id="wheelSlots"></div><div id="wheelLabel"></div></div>
+    <div id="pause" hidden>
+      <div class="panel">
+        <div class="title">PAUSE</div>
+        <button type="button" class="primary" id="resume">WEITER</button>
+        <div class="muted" id="pauseHint">P drücken oder auf WEITER klicken</div>
+      </div>
+    </div>
+    <button type="button" id="mute" aria-label="Ton an oder aus">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9z"/><path id="muteWave" d="M16 9a4 4 0 0 1 0 6M19 6a8 8 0 0 1 0 12"/></svg>
+    </button>
+  </div>
+
+  <div id="intro">
+    <div class="panel">
+      <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px">
+        <div class="title">NEON CITY</div>
+        <div class="tag">Third-Person-Crime-Sandbox</div>
+      </div>
+      <div class="controls">
+        <div>
+          <h2>TASTATUR &amp; MAUS</h2>
+          <div><b>WASD</b> laufen · <b>Shift</b> sprinten · <b>Leertaste</b> springen</div>
+          <div><b>Rechte Maustaste</b> zielen · <b>Linke</b> schießen / schlagen</div>
+          <div><b>R</b> nachladen · <b>Tab halten</b> Waffenrad · <b>Mausrad</b> Waffe</div>
+          <div><b>F</b> einsteigen / Auto klauen · <b>E</b> Läden, Leute, Aufträge</div>
+          <div>Auto: <b>W/S</b> Gas / Bremse · <b>Leertaste</b> Handbremse · <b>E</b> Hupe</div>
+          <div><b>C</b> zurückschauen · <b>V</b> Kamera · <b>P</b> Pause · <b>M</b> Ton</div>
+        </div>
+        <div>
+          <h2>CONTROLLER</h2>
+          <div><b>Linker Stick</b> laufen · <b>A halten</b> sprinten · <b>X</b> springen</div>
+          <div><b>LT</b> zielen mit Zielhilfe · <b>RT</b> schießen / schlagen</div>
+          <div><b>B</b> nachladen · <b>LB halten</b> Waffenrad · <b>Steuerkreuz ←</b> Waffe</div>
+          <div><b>Y</b> einsteigen / Auto klauen · <b>Steuerkreuz →</b> Läden, Leute</div>
+          <div>Auto: <b>RT</b> Gas · <b>LT</b> Bremse · <b>RB</b> Handbremse · <b>L3</b> Hupe · <b>LB</b> Drive-by</div>
+          <div><b>R3</b> zurückschauen · <b>Back</b> Kamera · <b>Start</b> Pause</div>
+        </div>
+      </div>
+      <div class="muted">Kauf dir Waffen bei Kugel &amp; Co., hol dir Aufträge von Tony am Hafen, und wenn die Polizei hinter dir her ist: ab in die Lackiererei.</div>
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px">
+        <button type="button" class="primary" id="start" style="font-size:26px;min-height:52px">SPIELEN</button>
+        <div class="muted" id="padStatus">oder Enter drücken · Controller: A oder Start</div>
+      </div>
+      <div id="error" hidden></div>
+    </div>
+  </div>
+</div>
+
+<script src="game.js"></script>
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const STAR = 'M12 2.5l2.9 6.1 6.6.8-4.9 4.6 1.3 6.6L12 17.3 6.1 20.6l1.3-6.6L2.5 9.4l6.6-.8z';
+  const stars = [];
+  for (let i = 0; i < 5; i++) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('width', '28'); svg.setAttribute('height', '28'); svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('aria-hidden', 'true');
+    const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p.setAttribute('d', STAR); p.setAttribute('stroke', '#000'); p.setAttribute('stroke-width', '1.4'); p.setAttribute('fill', 'rgba(0,0,0,0.35)');
+    svg.appendChild(p); $('stars').appendChild(svg); stars.push(p);
+  }
+
+  const S = {};
+  let queued = false, lastShop, lastDialog, lastWheel;
+  function ui(patch) { Object.assign(S, patch); if (!queued) { queued = true; requestAnimationFrame(render); } }
+  const text = (id, v) => { const el = $(id); const t = v == null ? '' : String(v); if (el.textContent !== t) el.textContent = t; };
+  const show = (id, on) => { $(id).hidden = !on; };
+
+  function itemButton(n, label, price, sel, disabled, onClick) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'item' + (sel ? ' sel' : ''); b.disabled = !!disabled;
+    const a = document.createElement('span'); a.className = 'n'; a.textContent = n; b.appendChild(a);
+    const l = document.createElement('span'); l.className = 'label'; l.textContent = label; b.appendChild(l);
+    if (price) { const p = document.createElement('span'); p.className = 'price'; p.textContent = price; b.appendChild(p); }
+    b.addEventListener('click', () => { onClick(); $('root').focus(); });
+    return b;
+  }
+
+  function render() {
+    queued = false;
+    const started = !!S.started;
+    show('intro', !started); show('hud', started); $('radar').hidden = !started;
+    if (S.error) { text('error', S.error); show('error', true); }
+    if (S.padStatus) text('padStatus', S.padStatus);
+    if (!started) return;
+
+    text('weapon', S.weapon || 'FAUST'); text('ammo', S.ammo); text('clock', S.clock); text('money', S.money);
+    $('hp').style.width = Math.max(0, Math.min(100, S.hp == null ? 100 : S.hp)) + '%';
+    const ar = S.armor || 0; $('armor').style.width = Math.max(0, Math.min(100, ar)) + '%'; $('armorBar').style.opacity = ar > 0 ? 1 : 0;
+    (S.stars || []).forEach((s, i) => { if (stars[i]) stars[i].setAttribute('fill', s.fill); });
+    text('prompt', S.prompt); show('prompt', !!S.prompt);
+    text('timer', S.timer); show('timer', !!S.timer);
+    show('crosshair', !!S.crosshair && !S.shop && !S.dialog);
+    text('zone', S.zone); $('zone').style.opacity = S.zoneOn ? 1 : 0;
+    text('vehicle', S.vehicle); $('vehicle').style.opacity = S.vehicleOn ? 1 : 0;
+    text('speed', S.speed); text('message', S.message); text('objective', S.objective);
+    if (S.big) { text('bigText', S.big); text('bigSub', S.bigSub); $('bigText').style.color = S.bigColor || '#fff'; }
+    show('big', !!S.big);
+    text('hint', S.hint); show('hint', !!S.hint);
+    $('muteWave').setAttribute('d', S.muted ? 'M17 9l5 6M22 9l-5 6' : 'M16 9a4 4 0 0 1 0 6M19 6a8 8 0 0 1 0 12');
+
+    if (S.shop !== lastShop) {
+      lastShop = S.shop; const box = $('shopItems'); box.textContent = '';
+      if (S.shop) {
+        text('shopTitle', S.shop.title); text('shopSub', S.shop.sub); text('shopClose', S.closeLabel || 'Verlassen (E / Esc)');
+        S.shop.items.forEach((it, i) => box.appendChild(itemButton(i + 1, it.label, it.price, i === S.shop.sel, it.disabled, it.buy)));
+      }
+    }
+    show('shop', !!S.shop);
+    if (S.dialog !== lastDialog) {
+      lastDialog = S.dialog; const box = $('dlgOptions'); box.textContent = '';
+      if (S.dialog) {
+        text('dlgName', S.dialog.name); text('dlgText', S.dialog.text);
+        S.dialog.options.forEach((o, i) => box.appendChild(itemButton(i + 1, o.label, '', i === S.dialog.sel, false, o.pick)));
+      }
+    }
+    show('dialog', !!S.dialog);
+    if (S.wheel !== lastWheel) {
+      lastWheel = S.wheel; const box = $('wheelSlots'); box.textContent = '';
+      if (S.wheel) {
+        const n = S.wheel.slots.length;
+        S.wheel.slots.forEach((w, i) => {
+          const a = i / n * Math.PI * 2, d = document.createElement('div');
+          d.className = 'slot' + (i === S.wheel.sel ? ' sel' : '') + (w.owned ? '' : ' off');
+          d.style.left = 'calc(50% + ' + Math.round(Math.sin(a) * 150) + 'px)'; d.style.top = 'calc(50% + ' + Math.round(-Math.cos(a) * 150) + 'px)';
+          const nm = document.createElement('div'); nm.className = 'name'; nm.textContent = w.name; d.appendChild(nm);
+          const am = document.createElement('div'); am.className = 'ammo'; am.textContent = w.ammo; d.appendChild(am);
+          box.appendChild(d);
+        });
+        text('wheelLabel', S.wheel.label);
+      }
+    }
+    show('wheel', !!S.wheel);
+    show('pause', !!S.paused); if (S.pauseHint) text('pauseHint', S.pauseHint);
+  }
+
+  let game = null;
+  try { game = buildGame($('view'), $('radar'), $('root'), ui); }
+  catch (e) { ui({ error: 'Das Spiel konnte nicht starten: ' + (e && e.message ? e.message : e) }); }
+  if (!game && !S.error) ui({ error: 'Das Spiel konnte nicht geladen werden.' });
+  $('start').addEventListener('click', () => { if (game) game.start(); });
+  $('resume').addEventListener('click', () => { if (game) game.resume(); });
+  $('mute').addEventListener('click', () => { if (game) game.toggleMute(); $('root').focus(); });
+  $('shopClose').addEventListener('click', () => { if (game) game.closeMenu(); });
+  render();
+  $('root').focus();
+})();
+</script>
+</body>
+</html>
