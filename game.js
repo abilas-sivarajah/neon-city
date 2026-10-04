@@ -97,6 +97,44 @@ function buildGame(canvas, radar, root, ui) {
     }
     return g;
   }
+  // Drehkörper: rings = [y, rx, rz, farbe, zVersatz]; die Farbe gilt für das Band bis zum nächsten Ring
+  function latheGeo(g, rings, seg) {
+    const n = rings.length, slope = [];
+    for (let i = 0; i < n; i++) {
+      const a = rings[Math.max(0, i - 1)], b = rings[Math.min(n - 1, i + 1)], dy = b[0] - a[0];
+      slope.push(Math.abs(dy) > 1e-6 ? ((b[1] + b[2]) - (a[1] + a[2])) / 2 / dy : 0);
+    }
+    const vtx = (i, k) => {
+      const r = rings[i], an = k / seg * TAU, ca = Math.cos(an), sa = Math.sin(an);
+      let nx = 0, ny, nz = 0;
+      if (r[1] < 1e-4) ny = r[0] > rings[i === 0 ? 1 : i - 1][0] ? 1 : -1;
+      else {
+        nx = ca / r[1]; nz = sa / r[2]; const h = Math.hypot(nx, nz); nx /= h; nz /= h; ny = -slope[i];
+        const l = Math.hypot(nx, ny, nz); nx /= l; ny /= l; nz /= l;
+      }
+      return [r[1] * ca, r[0], r[2] * sa + (r[4] || 0), nx, ny, nz];
+    };
+    for (let i = 0; i < n - 1; i++) {
+      const c = rings[i][3];
+      for (let k = 0; k < seg; k++) {
+        const q = [vtx(i, k), vtx(i, k + 1), vtx(i + 1, k + 1), vtx(i + 1, k)];
+        for (const t of TRI) { const v = q[t]; g.d.push(v[0], v[1], v[2], v[3], v[4], v[5], c[0], c[1], c[2], c[3]); }
+      }
+    }
+  }
+  function ellipGeo(g, cx, cy, cz, rx, ry, rz, c, seg) {
+    const lat = Math.max(4, seg >> 1);
+    const vtx = (i, k) => {
+      const th = i / lat * Math.PI, ph = k / seg * TAU;
+      const dx = Math.sin(th) * Math.cos(ph), dy = -Math.cos(th), dz = Math.sin(th) * Math.sin(ph);
+      let nx = dx / rx, ny = dy / ry, nz = dz / rz; const l = Math.hypot(nx, ny, nz); nx /= l; ny /= l; nz /= l;
+      return [cx + dx * rx, cy + dy * ry, cz + dz * rz, nx, ny, nz];
+    };
+    for (let i = 0; i < lat; i++) for (let k = 0; k < seg; k++) {
+      const q = [vtx(i, k), vtx(i, k + 1), vtx(i + 1, k + 1), vtx(i + 1, k)];
+      for (const t of TRI) { const v = q[t]; g.d.push(v[0], v[1], v[2], v[3], v[4], v[5], c[0], c[1], c[2], c[3]); }
+    }
+  }
 
   // ================= WebGL =================
   const gl = canvas.getContext('webgl', { antialias: true, alpha: false }) || canvas.getContext('experimental-webgl');
@@ -651,8 +689,9 @@ function buildGame(canvas, radar, root, ui) {
     const p = { kind: kind, x: x, z: z, y: groundY(x, z), vx: 0, vz: 0, vy: 0, yaw: rand(0, TAU), hp: 100, state: 'walk', stateT: 0, walkT: rand(0, 10), moving: 0,
       skin: rgb(pick(SKINS)), shirt: rgb(pick(SHIRTS)), pants: rgb(pick(PANTS)), hair: rgb(pick(HAIRS)), speed: rand(1.2, 1.7),
       bi: 0, bj: 0, k: 0, dir: Math.random() < 0.5 ? 1 : -1, tx: x, tz: z, fx: 0, fz: 0, shootT: rand(0.6, 1.4), armed: false,
-      deadT: 0, spin: 0, spinV: 0, fall: 0, inCar: null, car: null, aim: false, punchT: 0, cash: randi(5, 60), arrestT: 0, name: null, hostile: false };
-    if (kind === 'cop') { p.shirt = rgb('#1f3a68'); p.pants = rgb('#1b2433'); p.hair = rgb('#111111'); p.armed = true; p.cash = randi(20, 80); }
+      deadT: 0, spin: 0, spinV: 0, fall: 0, inCar: null, car: null, aim: false, punchT: 0, cash: randi(5, 60), arrestT: 0, name: null, hostile: false,
+      hairStyle: Math.random() < 0.55 ? 0 : Math.random() < 0.8 ? 1 : 2, sleeve: Math.random() < 0.3, h: rand(0.94, 1.05), bw: rand(0.93, 1.1) };
+    if (kind === 'cop') { p.shirt = rgb('#1f3a68'); p.sleeve = true; p.hairStyle = 0; p.pants = rgb('#1b2433'); p.hair = rgb('#111111'); p.armed = true; p.cash = randi(20, 80); }
     return p;
   }
   function addPed(p) { if (peds.indexOf(p) < 0) peds.push(p); return p; }
@@ -958,34 +997,112 @@ function buildGame(canvas, radar, root, ui) {
       const k = pickups[i]; k.t += dt;
       if (k.t > 60) { pickups.splice(i, 1); continue; }
       if (!player.inCar && !player.dead && Math.hypot(player.x - k.x, player.z - k.z) < 1.2) {
-        pickups.splice(i, 1); player.money += k.amount; sfx('cash', 0.6); msg('+$' + k.amount, 1.2);
+        pickups.splice(i, 1);
+        if (k.w) lootWeapon(k.w, k.ammo);
+        else { player.money += k.amount; sfx('cash', 0.6); msg('+$' + k.amount, 1.2); }
       }
     }
   }
 
   // ================= Zeichnen von Figuren & Autos =================
   const SHADOW = [0, 0, 0];
+  // Körperteile als runde Meshes. Farbe [1,1,1,2] = uPaint, [1,1,1,3] = uPaint2, Material 0 = feste Farbe.
+  function buildBody(seg) {
+    const P1 = [1, 1, 1, 2], P2 = [1, 1, 1, 3];
+    const BELT = [0.09, 0.08, 0.07, 0], SHOE = [0.11, 0.1, 0.1, 0], SOLE = [0.78, 0.76, 0.72, 0];
+    const EYE = [0.93, 0.93, 0.9, 0], IRIS = [0.13, 0.09, 0.06, 0], BROW = [0.12, 0.09, 0.07, 0], LIPS = [0.78, 0.55, 0.52, 2];
+    const HAT = [0.1, 0.14, 0.25, 0], BRIM = [0.06, 0.07, 0.1, 0], BADGE = [0.9, 0.74, 0.28, 0];
+    const mk = (fn) => { const g = geo(); fn(g); return upload(g); };
+    const L = (g, rings) => latheGeo(g, rings, seg), E = (g, cx, cy, cz, rx, ry, rz, c) => ellipGeo(g, cx, cy, cz, rx, ry, rz, c, seg);
+    // Oberarm: Ärmel (P1) und Haut (P2) bzw. durchgehend Ärmel
+    const shoulder = [[0.05, 0, 0, P1], [0.035, 0.042, 0.042, P1], [0.005, 0.056, 0.054, P1], [-0.07, 0.054, 0.051, P1]];
+    const upperArm = (long) => mk((g) => L(g, shoulder.concat(long
+      ? [[-0.16, 0.05, 0.048, P1], [-0.25, 0.047, 0.046, P1], [-0.29, 0.035, 0.034, P1], [-0.31, 0, 0, P1]]
+      : [[-0.13, 0.054, 0.051, P1], [-0.131, 0.043, 0.042, P2], [-0.21, 0.042, 0.041, P2], [-0.27, 0.037, 0.036, P2], [-0.3, 0.025, 0.025, P2], [-0.31, 0, 0, P2]])));
+    // Unterarm mit Hand: Haut (P1), Ärmel (P2)
+    const foreArm = (sleeve) => mk((g) => {
+      const S = sleeve ? P2 : P1, d = sleeve ? 0.008 : 0;
+      L(g, [[0.03, 0, 0, S], [0.015, 0.033 + d, 0.032 + d, S], [0, 0.038 + d, 0.036 + d, S], [-0.08, 0.041 + d, 0.037 + d, S], [-0.18, 0.032 + d, 0.029 + d, S],
+        [-0.225, 0.03 + d, 0.028 + d, sleeve ? P2 : P1], [-0.226, 0.026, 0.024, P1], [-0.24, 0.026, 0.024, P1], [-0.25, 0, 0, P1]]);
+      E(g, 0, -0.3, 0.006, 0.022, 0.062, 0.04, P1);
+      E(g, 0.012, -0.262, 0.035, 0.012, 0.03, 0.012, P1);
+    });
+    return {
+      torso: mk((g) => L(g, [[0.8, 0, 0, P2], [0.83, 0.1, 0.07, P2], [0.88, 0.155, 0.105, P2, -0.005], [0.96, 0.172, 0.115, P2, -0.01],
+        [1.02, 0.168, 0.11, BELT, -0.005], [1.045, 0.172, 0.112, P1], [1.12, 0.158, 0.104, P1, 0.005], [1.22, 0.168, 0.11, P1, 0.012],
+        [1.32, 0.188, 0.12, P1, 0.018], [1.4, 0.2, 0.118, P1, 0.012], [1.46, 0.19, 0.105, P1], [1.505, 0.14, 0.085, P1, -0.005],
+        [1.535, 0.07, 0.06, P1, -0.005], [1.55, 0, 0, P1]])),
+      head: mk((g) => {
+        L(g, [[1.49, 0.052, 0.056, P1], [1.58, 0.054, 0.058, P1], [1.588, 0.07, 0.078, P1, 0.022], [1.61, 0.082, 0.094, P1, 0.022],
+          [1.64, 0.09, 0.102, P1, 0.016], [1.68, 0.095, 0.107, P1, 0.01], [1.72, 0.097, 0.11, P1, 0.004], [1.76, 0.092, 0.104, P1],
+          [1.795, 0.072, 0.085, P1, -0.004], [1.818, 0.038, 0.048, P1, -0.006], [1.826, 0, 0, P1, -0.006]]);
+        E(g, 0, 1.674, 0.112, 0.012, 0.022, 0.016, P1);
+        E(g, 0, 1.627, 0.11, 0.021, 0.006, 0.007, LIPS);
+        for (const s of [-1, 1]) {
+          E(g, s * 0.034, 1.704, 0.102, 0.013, 0.008, 0.008, EYE);
+          E(g, s * 0.034, 1.704, 0.108, 0.0065, 0.0065, 0.004, IRIS);
+          E(g, s * 0.036, 1.724, 0.105, 0.02, 0.005, 0.007, BROW);
+          E(g, s * 0.096, 1.68, -0.005, 0.014, 0.03, 0.022, P1);
+        }
+      }),
+      hairShort: mk((g) => E(g, 0, 1.738, -0.012, 0.106, 0.096, 0.118, P1)),
+      hairLong: mk((g) => {
+        E(g, 0, 1.738, -0.012, 0.108, 0.098, 0.12, P1);
+        E(g, 0, 1.62, -0.06, 0.1, 0.14, 0.065, P1);
+        for (const s of [-1, 1]) E(g, s * 0.088, 1.66, -0.012, 0.03, 0.095, 0.065, P1);
+      }),
+      hat: mk((g) => {
+        L(g, [[1.735, 0.108, 0.121, HAT, -0.01], [1.8, 0.11, 0.122, HAT, -0.01], [1.835, 0.102, 0.112, HAT, -0.01], [1.848, 0, 0, HAT, -0.01]]);
+        E(g, 0, 1.75, 0.1, 0.095, 0.012, 0.07, BRIM);
+        E(g, 0, 1.79, 0.112, 0.018, 0.02, 0.008, BADGE);
+      }),
+      thigh: mk((g) => L(g, [[0.05, 0, 0, P1], [0.035, 0.06, 0.065, P1], [0, 0.088, 0.095, P1], [-0.12, 0.083, 0.09, P1, 0.005],
+        [-0.28, 0.068, 0.074, P1, 0.005], [-0.4, 0.058, 0.062, P1], [-0.44, 0.054, 0.058, P1], [-0.47, 0.03, 0.035, P1], [-0.48, 0, 0, P1]])),
+      shin: mk((g) => {
+        L(g, [[0.04, 0, 0, P1], [0.025, 0.045, 0.05, P1], [0, 0.058, 0.062, P1], [-0.1, 0.06, 0.068, P1, -0.006], [-0.22, 0.056, 0.062, P1, -0.004],
+          [-0.36, 0.058, 0.062, P1], [-0.37, 0, 0, P1]]);
+        E(g, 0, -0.415, 0.035, 0.05, 0.05, 0.12, SHOE);
+        E(g, 0, -0.455, 0.035, 0.053, 0.018, 0.126, SOLE);
+      }),
+      armShort: upperArm(false), armLong: upperArm(true),
+      fore: foreArm(false), foreSleeve: foreArm(true),
+    };
+  }
+  const bodyHi = buildBody(16), bodyLo = buildBody(7);
+  const GUN = [0.08, 0.08, 0.09];
   function drawHuman(p) {
-    const sw = Math.sin(p.walkT) * 0.65 * p.moving;
+    const B = Math.hypot(p.x - camState.eye[0], p.z - camState.eye[2]) < 40 ? bodyHi : bodyLo;
+    const m = p.moving, wt = p.walkT, h = p.h || 1;
     mIdent(MA); tr(MA, p.x, p.y, p.z); ry(MA, p.yaw);
     if (p.state === 'dead') { tr(MA, 0, 0.14, 0); rx(MA, Math.PI / 2 * p.fall); }
     else if (p.state === 'ragdoll') { tr(MA, 0, 0.9, 0); rx(MA, p.spin); tr(MA, 0, -0.9, 0); }
-    for (const s of [-1, 1]) { mCopy(MB, MA); tr(MB, s * 0.11, 0.9, 0); rx(MB, sw * s); tr(MB, 0, -0.44, 0); sc(MB, 0.17, 0.88, 0.2); part(MB, p.pants); }
-    mCopy(MB, MA); tr(MB, 0, 1.21, 0); sc(MB, 0.46, 0.62, 0.26); part(MB, p.shirt);
+    sc(MA, h * (p.bw || 1), h, h);
+    drawMesh(B.torso, MA, p.shirt, p.pants, 1);
+    // Beine: Hüfte schwingt, das Knie beugt sich beim Vorschwingen
     for (const s of [-1, 1]) {
-      mCopy(MB, MA); tr(MB, s * 0.3, 1.48, 0);
-      let a = -sw * s * 0.8;
-      const isRight = s < 0;
-      if (isRight && (p.aim || p.punchT > 0)) a = -Math.PI / 2 + (p.aimPitch || 0);
-      if (!isRight && p.aim && p.twoHand) a = -Math.PI / 2 + (p.aimPitch || 0) + 0.15;
-      rx(MB, a);
-      mCopy(MC, MB); tr(MC, 0, -0.3, 0); sc(MC, 0.13, 0.6, 0.14); part(MC, p.shirt);
-      mCopy(MC, MB); tr(MC, 0, -0.64, 0); sc(MC, 0.11, 0.1, 0.11); part(MC, p.skin);
-      if (isRight && p.aim && p.gunLen) { mCopy(MC, MB); tr(MC, 0, -0.62 - p.gunLen / 2, 0.06); sc(MC, 0.07, p.gunLen, 0.13); part(MC, [0.08, 0.08, 0.09]); }
+      const knee = m * (0.08 + 0.95 * Math.max(0, -s * Math.cos(wt)));
+      mCopy(MB, MA); tr(MB, s * 0.095, 0.92, 0); rx(MB, Math.sin(wt) * 0.5 * m * s); drawMesh(B.thigh, MB, p.pants);
+      tr(MB, 0, -0.44, 0); rx(MB, knee); drawMesh(B.shin, MB, p.pants);
     }
-    mCopy(MB, MA); tr(MB, 0, 1.66, 0); sc(MB, 0.24, 0.26, 0.25); part(MB, p.skin);
-    mCopy(MB, MA); tr(MB, 0, 1.8, -0.01); sc(MB, 0.26, 0.07, 0.27); part(MB, p.hair);
-    if (p.kind === 'cop') { mCopy(MB, MA); tr(MB, 0, 1.84, 0.02); sc(MB, 0.28, 0.07, 0.32); part(MB, [0.1, 0.14, 0.25]); }
+    // Arme: Schulter, Ellbogen, Hand
+    for (const s of [-1, 1]) {
+      const isRight = s < 0;
+      let a = -Math.sin(wt) * 0.52 * m * s, elbow = -(0.15 + Math.max(0, -a) * 0.8), spread = s * 0.07;
+      if (isRight && (p.aim || p.punchT > 0)) { a = -Math.PI / 2 + (p.aimPitch || 0); elbow = 0; spread = 0; }
+      if (!isRight && p.aim && p.twoHand) { a = -Math.PI / 2 + (p.aimPitch || 0) + 0.15; elbow = -0.25; spread = -s * 0.45; }
+      mCopy(MB, MA); tr(MB, s * 0.2, 1.45, 0); rz(MB, spread); rx(MB, a);
+      drawMesh(p.sleeve ? B.armLong : B.armShort, MB, p.shirt, p.skin);
+      tr(MB, 0, -0.29, 0); rx(MB, elbow);
+      drawMesh(p.sleeve ? B.foreSleeve : B.fore, MB, p.skin, p.shirt);
+      if (isRight && p.aim && p.gunLen) {
+        mCopy(MC, MB); tr(MC, 0, -0.27 - p.gunLen / 2, 0.05); sc(MC, 0.06, p.gunLen, 0.1); part(MC, GUN);
+        mCopy(MC, MB); tr(MC, 0, -0.3, -0.01); sc(MC, 0.045, 0.05, 0.1); part(MC, GUN);
+      }
+    }
+    drawMesh(B.head, MA, p.skin);
+    if (p.kind === 'cop') { drawMesh(B.hairShort, MA, p.hair); drawMesh(B.hat, MA); }
+    else if (p.hairStyle === 1) drawMesh(B.hairLong, MA, p.hair);
+    else if (p.hairStyle !== 2) drawMesh(B.hairShort, MA, p.hair);
   }
   function drawCar(c) {
     mIdent(MA); tr(MA, c.x, c.y, c.z); ry(MA, c.yaw);
@@ -1013,6 +1130,12 @@ function buildGame(canvas, radar, root, ui) {
     if (player.weapons[k] == null) { player.weapons[k] = 0; player.clip[k] = 0; }
     player.weapons[k] += n; if (!player.clip[k]) fillClip(k);
   }
+  // Aufgesammelte Waffe: neue Waffe oder nur Munition, falls man sie schon hat
+  function lootWeapon(k, n) {
+    const isNew = player.weapons[k] == null;
+    giveAmmo(k, n); sfx('reload', 0.6);
+    msg(isNew ? WLABEL[k] + ' erbeutet (+' + n + ' Schuss)' : 'Munition ' + WLABEL[k] + ' +' + n, 2);
+  }
   function startReload() {
     const k = player.cur;
     if (k === 'fist' || player.reloadT > 0 || player.dead) return;
@@ -1028,7 +1151,7 @@ function buildGame(canvas, radar, root, ui) {
   const WLABEL = { pistol: 'Pistole', uzi: 'Uzi', shotgun: 'Schrotflinte', rifle: 'Sturmgewehr' };
   const player = makePed('player', 0, 0);
   Object.assign(player, { hp: 100, armor: 0, money: 500, weapons: { fist: Infinity }, clip: {}, reloadT: 0, cur: 'fist', inCar: null, dead: false, grounded: true,
-    shootT: 0, aimHold: 0, arrestT: 0, state: 'walk', skin: rgb('#c68a5e'), shirt: rgb('#f2f2f2'), pants: rgb('#2b4a7a'), hair: rgb('#1a1a1a') });
+    shootT: 0, aimHold: 0, arrestT: 0, state: 'walk', skin: rgb('#c68a5e'), shirt: rgb('#f2f2f2'), pants: rgb('#2b4a7a'), hair: rgb('#1a1a1a'), hairStyle: 0, sleeve: false, h: 1, bw: 1 });
   const keys = {};
   const mouse = { l: false, r: false, clicked: false };
   let wanted = 0, evadeT = 0, seen = false, losT = 0, dispatchT = 0;
@@ -1316,9 +1439,14 @@ function buildGame(canvas, radar, root, ui) {
       if (d.kind === 'cop') { d.state = 'attack'; d.car = null; crime('stealcop', d); }
       else { panic(d, player.x, player.z); crime('steal', d); }
       sfx('hit', 0.4);
-    } else if (c.type === 'police') crime('stealcop', null);
+    } else if (c.type === 'police' && !c.playerOwned) crime('stealcop', null);
     player.inCar = c; c.driver = player; c.mode = 'player'; c.ai = null; c.flee = false; c.deployed = false;
     if (c.type !== 'police') c.siren = false;
+    // Einen geklauten Streifenwagen meldet die Polizei nur einmal; die Schrotflinte im Kofferraum gibt es auch nur einmal
+    if (c.type === 'police') {
+      c.playerOwned = true;
+      if (!c.looted) { c.looted = true; lootWeapon('shotgun', randi(8, 16)); }
+    }
     vehicleT = 3; ui({ vehicle: c.T.name.toUpperCase(), vehicleOn: true });
     sfx('door', 0.5);
   }
@@ -1522,6 +1650,12 @@ function buildGame(canvas, radar, root, ui) {
   }
   function onPedKilled(p, src) {
     if (p.cash > 0) { pickups.push({ x: p.x + rand(-0.4, 0.4), z: p.z + rand(-0.4, 0.4), amount: p.cash, t: 0 }); p.cash = 0; }
+    // Polizisten lassen ihre Dienstwaffe fallen: meist eine Pistole, bei hoher Fahndung auch mal eine Schrotflinte
+    if (p.kind === 'cop' && !p.dropped) {
+      p.dropped = true;
+      const w = wanted >= 3 && Math.random() < 0.35 ? 'shotgun' : 'pistol';
+      pickups.push({ x: p.x + rand(-0.5, 0.5), z: p.z + rand(-0.5, 0.5), w: w, ammo: w === 'shotgun' ? randi(6, 12) : randi(12, 30), t: 0 });
+    }
     if (src === 'player') panicAround(p.x, p.z, 30);
   }
   let objective = '', vehicleT = 0;
@@ -1628,7 +1762,14 @@ function buildGame(canvas, radar, root, ui) {
     for (const p of peds) if (visible(p.x, p.z, 2)) drawHuman(p);
     if (started && !player.inCar) drawHuman(player);
     if (tony) { mIdent(MA); tr(MA, tony.x, tony.y + 2.35 + Math.sin(nowT * 3) * 0.12, tony.z); ry(MA, nowT * 2); sc(MA, 0.35, 0.35, 0.35); part(MA, [1, 0.8, 0.15], true); }
-    for (const k of pickups) { mIdent(MA); tr(MA, k.x, groundY(k.x, k.z) + 0.45 + Math.sin(nowT * 4 + k.x) * 0.08, k.z); ry(MA, nowT * 2.5); sc(MA, 0.42, 0.24, 0.12); part(MA, [0.25, 0.8, 0.3], true); }
+    for (const k of pickups) {
+      mIdent(MA); tr(MA, k.x, groundY(k.x, k.z) + 0.45 + Math.sin(nowT * 4 + k.x) * 0.08, k.z); ry(MA, nowT * 2.5);
+      if (!k.w) { sc(MA, 0.42, 0.24, 0.12); part(MA, [0.25, 0.8, 0.3], true); continue; }
+      // Waffe: Lauf und Griff, leuchtend blau
+      const len = k.w === 'shotgun' ? 0.8 : 0.42, col = [0.35, 0.7, 1];
+      mCopy(MB, MA); sc(MB, len, 0.11, 0.08); part(MB, col, true);
+      mCopy(MB, MA); tr(MB, -len * 0.3, -0.11, 0); rz(MB, -0.25); sc(MB, 0.09, 0.2, 0.07); part(MB, col, true);
+    }
     // Transparentes
     gl.enable(gl.BLEND); gl.depthMask(false);
     for (const c of cars) if (visible(c.x, c.z, 4)) { mIdent(MA); tr(MA, c.x, c.y + 0.03, c.z); ry(MA, c.yaw); sc(MA, c.T.Wd * 0.62, 1, c.T.L * 0.58); drawMesh(diskMesh, MA, SHADOW, null, 0.4); }
@@ -2031,7 +2172,7 @@ function buildGame(canvas, radar, root, ui) {
     for (let i = 0; i < 64; i++) spawnWalker(i % 13 === 0 ? 'cop' : 'civ');
     const b = blockRect(5, 0);
     tony = addPed(makePed('giver', b.cx + 4, b.z0 + 1.6));
-    Object.assign(tony, { name: 'Tony', hp: 1e9, state: 'stand', shirt: rgb('#f4f1ea'), pants: rgb('#f4f1ea'), hair: rgb('#111111'), cash: 0 });
+    Object.assign(tony, { name: 'Tony', hp: 1e9, state: 'stand', shirt: rgb('#f4f1ea'), pants: rgb('#f4f1ea'), hair: rgb('#111111'), cash: 0, hairStyle: 0, sleeve: true, h: 1.02, bw: 1.12 });
   }
   function placePlayer() {
     const s = shopOf('waffen');
