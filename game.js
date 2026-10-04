@@ -97,6 +97,7 @@ function buildGame(canvas, radar, root, ui) {
     }
     return g;
   }
+  let loftA = 4; // Bogenschritte je Ecke bei loftGeo (weniger für die vereinfachte Fernversion der Autos)
   // Drehkörper: rings = [y, rx, rz, farbe, zVersatz]; die Farbe gilt für das Band bis zum nächsten Ring
   function latheGeo(g, rings, seg) {
     const n = rings.length, slope = [];
@@ -232,7 +233,7 @@ function buildGame(canvas, radar, root, ui) {
     gl.uniform1f(U.uAlpha, alpha == null ? 1 : alpha);
     gl.drawArrays(gl.TRIANGLES, 0, mh.n);
   }
-  const IDM = m4(), MA = m4(), MB = m4(), MC = m4();
+  const IDM = m4(), MA = m4(), MB = m4(), MC = m4(), MU = m4();
   const unitLit = (() => { const g = geo(); box(g, -0.5, -0.5, -0.5, 0.5, 0.5, 0.5, [1, 1, 1, 2]); return upload(g); })();
   const unitEmis = (() => { const g = geo(); box(g, -0.5, -0.5, -0.5, 0.5, 0.5, 0.5, [1, 1, 1, 5]); return upload(g); })();
   const unitGlow = (() => { const g = geo(); box(g, -0.5, -0.5, -0.5, 0.5, 0.5, 0.5, [1, 1, 1, 7]); return upload(g); })();
@@ -254,7 +255,19 @@ function buildGame(canvas, radar, root, ui) {
     if (i >= 5) return 'palmen';
     return 'altstadt';
   }
-  function zoneAt(x, z) { return DNAMES[districtOf(clamp(Math.floor(x / P), 0, N - 1), clamp(Math.floor(z / P), 0, N - 1))]; }
+  function zoneAt(x, z) {
+    if (x >= 0 && x <= W && z >= -2 && z <= W) return DNAMES[districtOf(clamp(Math.floor(x / P), 0, N - 1), clamp(Math.floor(z / P), 0, N - 1))];
+    // außerhalb der Stadt (Landschaft weiter unten)
+    if (terrH(x, z) < -0.6 && distLine(BRIDGE, x, z) > 8) return 'Meer';
+    if (x > 490 && z > 70 && z < 470) return 'Flughafen';
+    if (Math.hypot(x + 130, z - 260) < 75) return 'Arena';
+    if (x < -110 && z > 0 && z < 140) return 'Jachthafen';
+    if (sdPoly(ISLE, x, z) > -10 || distLine(BRIDGE, x, z) < 8) return 'Leuchtturm-Insel';
+    if (Math.hypot(x + 118, z - 420) < 60) return 'Hügelsiedlung';
+    if (Math.hypot((x - LAKE.x) / (LAKE.rx + 40), (z - LAKE.z) / (LAKE.rz + 40)) < 1) return 'Kristallsee';
+    if (z > 540 || terrH(x, z) > 1.5) return 'Neon Hills';
+    return 'Ringstraße';
+  }
 
   // ---- Kollision (Raster) ----
   const cols = [];
@@ -281,22 +294,28 @@ function buildGame(canvas, radar, root, ui) {
   function circleCollide(o, r, y) {
     HIT.hit = false; HIT.nx = 0; HIT.nz = 0;
     const oy = y || 0;
-    forNear(o.x, o.z, r + 1, (c) => {
-      if (oy > c.h) return;
-      const qx = clamp(o.x, c.x0, c.x1), qz = clamp(o.z, c.z0, c.z1);
-      let dx = o.x - qx, dz = o.z - qz; const d2 = dx * dx + dz * dz;
-      if (d2 >= r * r) return;
-      if (d2 > 1e-8) {
-        const d = Math.sqrt(d2); dx /= d; dz /= d; o.x += dx * (r - d); o.z += dz * (r - d);
-      } else {
-        const pl = o.x - c.x0, pr = c.x1 - o.x, pb = o.z - c.z0, pt = c.z1 - o.z; const mn = Math.min(pl, pr, pb, pt);
-        dx = 0; dz = 0;
-        if (mn === pl) { dx = -1; o.x = c.x0 - r; } else if (mn === pr) { dx = 1; o.x = c.x1 + r; } else if (mn === pb) { dz = -1; o.z = c.z0 - r; } else { dz = 1; o.z = c.z1 + r; }
-      }
-      HIT.hit = true; HIT.nx += dx; HIT.nz += dz;
-    });
+    forNear(o.x, o.z, r + 1, (c) => { if (oy <= c.h) pushOut(o, r, c.x0, c.z0, c.x1, c.z1); });
+    // Gelände: gesperrte Rasterzellen (Hänge, Wasser) und alles außerhalb des Rasters wirken wie Wände
+    const i0 = Math.floor((o.x - r - TX0) / TG), i1 = Math.floor((o.x + r - TX0) / TG), j0 = Math.floor((o.z - r - TZ0) / TG), j1 = Math.floor((o.z + r - TZ0) / TG);
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      if (i >= 0 && j >= 0 && i < TNX && j < TNZ && !terrBl[j * TNX + i]) continue;
+      pushOut(o, r, TX0 + i * TG, TZ0 + j * TG, TX0 + (i + 1) * TG, TZ0 + (j + 1) * TG);
+    }
     if (HIT.hit) { const l = Math.hypot(HIT.nx, HIT.nz) || 1; HIT.nx /= l; HIT.nz /= l; }
     return HIT;
+  }
+  function pushOut(o, r, x0, z0, x1, z1) {
+    const qx = clamp(o.x, x0, x1), qz = clamp(o.z, z0, z1);
+    let dx = o.x - qx, dz = o.z - qz; const d2 = dx * dx + dz * dz;
+    if (d2 >= r * r) return;
+    if (d2 > 1e-8) {
+      const d = Math.sqrt(d2); dx /= d; dz /= d; o.x += dx * (r - d); o.z += dz * (r - d);
+    } else {
+      const pl = o.x - x0, pr = x1 - o.x, pb = o.z - z0, pt = z1 - o.z; const mn = Math.min(pl, pr, pb, pt);
+      dx = 0; dz = 0;
+      if (mn === pl) { dx = -1; o.x = x0 - r; } else if (mn === pr) { dx = 1; o.x = x1 + r; } else if (mn === pb) { dz = -1; o.z = z0 - r; } else { dz = 1; o.z = z1 + r; }
+    }
+    HIT.hit = true; HIT.nx += dx; HIT.nz += dz;
   }
   function onBlock(x, z) {
     const i = Math.floor((x - ROAD) / P), j = Math.floor((z - ROAD) / P);
@@ -305,7 +324,7 @@ function buildGame(canvas, radar, root, ui) {
   }
   const groundY = (x, z) => onBlock(x, z) ? 0.15 : 0;
   function insideBuilding(x, y, z, pad) {
-    let res = false;
+    let res = y < terrH(x, z) + 0.3;
     forNear(x, z, pad + 1, (c) => { if (!res && y < c.h && x > c.x0 - pad && x < c.x1 + pad && z > c.z0 - pad && z < c.z1 + pad) res = true; });
     return res;
   }
@@ -363,20 +382,24 @@ function buildGame(canvas, radar, root, ui) {
   function addLight(x, y, z, col, r, k, lamp) { lightSrc.push({ x: x, y: y, z: z, r: r, c: [col[0] * k, col[1] * k, col[2] * k], neon: !lamp }); }
   function tube(ax, ay, az, bx, by, bz, t, col) {
     const T = flick ? flickT : neonT, G = flick ? flickG : neonG;
+    tubeTo(T, G, ax, ay, az, bx, by, bz, t, col);
+  }
+  function tubeTo(T, G, ax, ay, az, bx, by, bz, t, col) {
+    lineBox(T, ax, ay, az, bx, by, bz, t, t, [lerp(col[0], 1, 0.5), lerp(col[1], 1, 0.5), lerp(col[2], 1, 0.5), 4]);
+    lineBox(G, ax, ay, az, bx, by, bz, t * 3.2, t * 3, [col[0] * 0.5, col[1] * 0.5, col[2] * 0.5, 7]);
+    lineBox(G, ax, ay, az, bx, by, bz, t * 8, t * 7, [col[0] * 0.2, col[1] * 0.2, col[2] * 0.2, 7]);
+  }
+  // Balken von a nach b mit quadratischem Querschnitt w, um ext verlängert
+  function lineBox(g, ax, ay, az, bx, by, bz, w, ext, c) {
     let dx = bx - ax, dy = by - ay, dz = bz - az; const len = Math.hypot(dx, dy, dz) || 1e-3; dx /= len; dy /= len; dz /= len;
     let px = 1, pz = 0;
     if (Math.abs(dy) < 0.9) { px = -dz; pz = dx; const l = Math.hypot(px, pz); px /= l; pz /= l; }
     const qx = dy * pz, qy = dz * px - dx * pz, qz = -dy * px;
-    const put = (g, w, ext, c) => {
-      GM[0] = dx * (len + ext); GM[1] = dy * (len + ext); GM[2] = dz * (len + ext); GM[3] = 0;
-      GM[4] = px * w; GM[5] = 0; GM[6] = pz * w; GM[7] = 0;
-      GM[8] = qx * w; GM[9] = qy * w; GM[10] = qz * w; GM[11] = 0;
-      GM[12] = (ax + bx) / 2; GM[13] = (ay + by) / 2; GM[14] = (az + bz) / 2; GM[15] = 1;
-      boxM(g, GM, c);
-    };
-    put(T, t, t, [lerp(col[0], 1, 0.5), lerp(col[1], 1, 0.5), lerp(col[2], 1, 0.5), 4]);
-    put(G, t * 3.2, t * 3, [col[0] * 0.5, col[1] * 0.5, col[2] * 0.5, 7]);
-    put(G, t * 8, t * 7, [col[0] * 0.2, col[1] * 0.2, col[2] * 0.2, 7]);
+    GM[0] = dx * (len + ext); GM[1] = dy * (len + ext); GM[2] = dz * (len + ext); GM[3] = 0;
+    GM[4] = px * w; GM[5] = 0; GM[6] = pz * w; GM[7] = 0;
+    GM[8] = qx * w; GM[9] = qy * w; GM[10] = qz * w; GM[11] = 0;
+    GM[12] = (ax + bx) / 2; GM[13] = (ay + by) / 2; GM[14] = (az + bz) / 2; GM[15] = 1;
+    boxM(g, GM, c);
   }
   // Röhrenschrift: Zeichen im Raster 2×4, Linienzüge mit Punkten "xy", Züge durch | getrennt
   const FONT = {
@@ -535,15 +558,18 @@ function buildGame(canvas, radar, root, ui) {
     if (b.x1 - x1 < 9) out.push([x1, (z0 + z1) / 2, 1, 0, z1 - z0]);
     return out;
   }
-  function decorate(b, x0, z0, x1, z1, h, dist) {
+  // dens: Anteil der Fassaden mit Schild (kleine Zeilenhäuser bekommen weniger); top: Dachdeko (Kanten, Billboards, Hologramme)
+  function decorate(b, x0, z0, x1, z1, h, dist, dens, top) {
     const fs = facades(b, x0, z0, x1, z1);
-    if (dist === 'downtown' || dist === 'altstadt' || dist === 'hafen') {
+    if (dens == null) dens = 1;
+    if (top == null) top = true;
+    if (dens > 0 && (dist === 'downtown' || dist === 'altstadt' || dist === 'hafen')) {
       for (const f of fs) {
-        const fx = f[0], fz = f[1], nx = f[2], nz = f[3], fw = f[4], rx = nz, rz = -nx, r = nr();
+        const fx = f[0], fz = f[1], nx = f[2], nz = f[3], fw = f[4], rx = nz, rz = -nx, r = nr() / dens;
         if (r < 0.5) {
           const word = dist === 'hafen' ? 'DOCK ' + Math.floor(nrr(1, 10)) : npick(WORDS), lh = nrr(0.8, 1.5), tw = textUnits(word) * lh / 4;
           if (tw > fw - 2.5) continue;
-          const y = Math.min(h - lh * 1.2, nrr(3.4, 9)), off = nrr(-1, 1) * (fw - tw - 2.5) / 2;
+          const y = Math.min(h - lh * 1.2, nrr(4.7, 9)), off = nrr(-1, 1) * (fw - tw - 2.5) / 2;
           flick = nr() < 0.12;
           facadeSign(fx + rx * off, fz + rz * off, nx, nz, y, word, lh, ncol(), nr() < 0.55);
           flick = false;
@@ -556,6 +582,7 @@ function buildGame(canvas, radar, root, ui) {
         }
       }
     }
+    if (!top) return;
     if (dist === 'downtown') {
       const c = ncol(), corners = [[x0, z0], [x1, z0], [x1, z1], [x0, z1]];
       // leuchtende Gebäudekanten und Dachkante
@@ -590,21 +617,10 @@ function buildGame(canvas, radar, root, ui) {
   }
 
   // Boden, Wasser, Straßen
-  quad(wg, -500, -1, 900, 900, -0.02, hexc('#3e4a38'));
-  quad(wg, -500, -500, 900, -1, -0.6, C.water);
+  // Gelände und Meer baut der Abschnitt „Landschaft“ weiter unten; hier nur Stadtfläche und Kaimauer im Süden
   quad(wg, 0, 0, W, W, 0, C.asphalt);
   box(wg, -1, -0.6, -1.2, W + 1, 0.0, 0, C.barrier);
   box(wg, 0, 0, -0.9, W, 0.9, -0.3, C.barrier); addCol(-2, -1.5, W + 2, -0.3, 0.9);
-  box(wg, -1.2, 0, 0, -0.3, 0.9, W + 1, C.barrier); addCol(-3, -2, -0.3, W + 3, 0.9);
-  box(wg, W + 0.3, 0, 0, W + 1.2, 0.9, W + 1, C.barrier); addCol(W + 0.3, -2, W + 3, W + 3, 0.9);
-  box(wg, 0, 0, W + 0.3, W, 0.9, W + 1.2, C.barrier); addCol(-2, W + 0.3, W + 2, W + 3, 0.9);
-  for (let k = 0; k < 26; k++) {
-    const side = k % 3; const s = sr(30, 70), h = sr(14, 46);
-    let x, z;
-    if (side === 0) { x = sr(-40, W + 40); z = W + sr(50, 160); } else if (side === 1) { x = -sr(50, 150); z = sr(0, W + 60); } else { x = W + sr(50, 150); z = sr(0, W + 60); }
-    box(wg, x - s, -0.5, z - s, x + s, h, z + s, k % 2 ? C.hill : C.hill2, true);
-    box(wg, x - s * 0.6, h, z - s * 0.6, x + s * 0.6, h * 1.35, z + s * 0.6, k % 2 ? C.hill2 : C.hill, true);
-  }
   // Fahrbahnmarkierungen
   for (let k = 0; k <= N; k++) {
     const rc = roadC(k);
@@ -623,6 +639,199 @@ function buildGame(canvas, radar, root, ui) {
         if (m > 0) quad(wg, rc + st, ic - ROAD / 2 - 3.2, rc + st + 0.55, ic - ROAD / 2 - 0.8, 0.021, C.zebra);
         if (m < N) quad(wg, rc + st, ic + ROAD / 2 + 0.8, rc + st + 0.55, ic + ROAD / 2 + 3.2, 0.021, C.zebra);
       }
+    }
+  }
+
+  // ---- Stadtleben: Läden im Erdgeschoss, Balkone, Straßenmöbel, Szenen für Passanten ----
+  // spots: Plätze, an denen in Spielernähe Passanten sitzen, warten, plaudern oder am Imbiss stehen (siehe updateSpots)
+  const spots = [], vents = [];
+  function addSpot(x, z, yaw, act, look) { spots.push({ x: x, z: z, yaw: yaw, act: act, look: look || null, ped: null, cool: 0 }); }
+  const yawOf = (nx, nz) => Math.atan2(nx, nz);
+  // Quader relativ zu einer Fassade: entlang der Fassade a0..a1, Höhe y0..y1, nach außen d0..d1 (Normale nx,nz)
+  function faceBox(fx, fz, nx, nz, a0, a1, y0, y1, d0, d1, c) {
+    const rx = nz, rz = -nx, xs = [], zs = [];
+    for (const a of [a0, a1]) for (const d of [d0, d1]) { xs.push(fx + rx * a + nx * d); zs.push(fz + rz * a + nz * d); }
+    box(wg, Math.min(...xs), y0, Math.min(...zs), Math.max(...xs), y1, Math.max(...zs), c);
+  }
+  const SHOPLIGHT = ['#ffcf8a', '#6fe0ff', '#ff8ad8', '#e8f4ff', '#b8ff9a', '#ffd76a'];
+  const AWNING = ['#8b1e3a', '#1f5a7a', '#2f6b3a', '#6b2a8a', '#a8541e', '#22313f'];
+  // Ladenfront im Erdgeschoss: Rahmen, leuchtendes Schaufenster, Tür, Markise, manchmal Neonleiste und Licht auf die Straße
+  function storefront(fx, fz, nx, nz, w) {
+    if (w < 4.5) return;
+    const lc = hexc(nr() < 0.5 ? npick(SHOPLIGHT) : npick(NEON)), win = [lc[0] * 0.8, lc[1] * 0.8, lc[2] * 0.8, 4];
+    faceBox(fx, fz, nx, nz, -w / 2 + 0.2, w / 2 - 0.2, 0.15, 3.75, 0, 0.06, hexc('#15171d'));
+    faceBox(fx, fz, nx, nz, -w / 2 + 0.6, w / 2 - 2.0, 0.6, 3.2, 0.06, 0.1, win);
+    faceBox(fx, fz, nx, nz, w / 2 - 1.7, w / 2 - 0.6, 0.15, 2.75, 0.06, 0.11, hexc('#2a2d35'));
+    faceBox(fx, fz, nx, nz, w / 2 - 1.7, w / 2 - 0.6, 2.85, 3.05, 0.06, 0.12, win);
+    if (nr() < 0.55) {
+      const ac = hexc(npick(AWNING));
+      faceBox(fx, fz, nx, nz, -w / 2 + 0.4, w / 2 - 0.4, 3.5, 3.68, 0.06, 1.45, ac);
+      faceBox(fx, fz, nx, nz, -w / 2 + 0.4, w / 2 - 0.4, 3.22, 3.68, 1.38, 1.5, [ac[0] * 0.75, ac[1] * 0.75, ac[2] * 0.75, 0]);
+    } else if (nr() < 0.5) {
+      const rx = nz, rz = -nx;
+      tube(fx - rx * (w / 2 - 0.5) + nx * 0.14, 3.45, fz - rz * (w / 2 - 0.5) + nz * 0.14, fx + rx * (w / 2 - 0.5) + nx * 0.14, 3.45, fz + rz * (w / 2 - 0.5) + nz * 0.14, 0.04, ncol());
+    }
+    if (nr() < 0.4) addLight(fx + nx * 1.4, 2.4, fz + nz * 1.4, lc, 7, 1.0);
+  }
+  // Balkone an einer Fassade
+  function balconies(fx, fz, nx, nz, w, h) {
+    const rail = hexc('#1b1d22'), slab = hexc('#6d6a66');
+    for (let y = 4.6; y < h - 2.5; y += 3.4) for (const a of [-w / 4, w / 4]) {
+      if (nr() < 0.3) continue;
+      faceBox(fx, fz, nx, nz, a - 1.1, a + 1.1, y, y + 0.15, 0, 0.95, slab);
+      faceBox(fx, fz, nx, nz, a - 1.1, a + 1.1, y + 0.15, y + 1.0, 0.88, 0.95, rail);
+    }
+  }
+  // Dachaufbauten: Lüftung, Wassertank
+  function roofStuff(x0, z0, x1, z1, h) {
+    if (nr() < 0.5) { const x = lerp(x0 + 1.5, x1 - 3, nr()), z = lerp(z0 + 1.5, z1 - 3, nr()); roundBox(wg, x, h + 0.5, z, x + 1.8, h + 1.6, z + 1.4, 0.2, hexc('#5a5c62')); }
+    if (nr() < 0.3) { const x = lerp(x0 + 2, x1 - 2, nr()), z = lerp(z0 + 2, z1 - 2, nr()); latheAt(wg, [[0, 1.1, 1.1, hexc('#6b4a32')], [2.2, 1.1, 1.1, hexc('#6b4a32')], [2.9, 0, 0, hexc('#3d3d40')]], 8, x, h + 1.6, z); for (const s of [-1, 1]) lineBox(wg, x + s * 0.7, h + 0.5, z, x + s * 0.7, h + 1.6, z, 0.12, 0, hexc('#2c2f36')); }
+  }
+  function rowColor() { return npick(['#6e4a3e', '#5c4b45', '#7a6250', '#4f3f3a', '#6b5a55', '#58443f', '#4a5260', '#5e4f6b', '#3f4a52']); }
+  // Altstadt: geschlossene Häuserzeilen am Blockrand mit Läden unten, Hinterhof in der Mitte
+  function rowBlock(b) {
+    const lx0 = b.x0 + SW, lz0 = b.z0 + SW, lx1 = b.x1 - SW, lz1 = b.z1 - SW, D = sr(9.5, 12);
+    const sides = [
+      { a0: lx0, a1: lx1, mk: (p, q) => [p, lz0, q, lz0 + D], n: [0, -1] },
+      { a0: lx0, a1: lx1, mk: (p, q) => [p, lz1 - D, q, lz1], n: [0, 1] },
+      { a0: lz0 + D, a1: lz1 - D, mk: (p, q) => [lx0, p, lx0 + D, q], n: [-1, 0] },
+      { a0: lz0 + D, a1: lz1 - D, mk: (p, q) => [lx1 - D, p, lx1, q], n: [1, 0] }
+    ];
+    for (const s of sides) {
+      let p = s.a0;
+      while (p < s.a1 - 4) {
+        if (p > s.a0 + 6 && srand() < 0.08) { p += 3; continue; } // Durchgang
+        let w = sr(7, 12); if (s.a1 - (p + w) < 6) w = s.a1 - p;
+        const r = s.mk(p, p + w), h = sr(9, 21), nx = s.n[0], nz = s.n[1];
+        building(r[0], r[1], r[2], r[3], h, rowColor(), true);
+        const fx = nx < 0 ? r[0] : nx > 0 ? r[2] : (r[0] + r[2]) / 2, fz = nz < 0 ? r[1] : nz > 0 ? r[3] : (r[1] + r[3]) / 2;
+        storefront(fx, fz, nx, nz, w);
+        if (nr() < 0.3) balconies(fx, fz, nx, nz, w, h);
+        roofStuff(r[0], r[1], r[2], r[3], h);
+        decorate(b, r[0], r[1], r[2], r[3], h, 'altstadt', 0.35, nr() < 0.25);
+        p += w;
+      }
+    }
+    // Hinterhof: Baum und Wäscheleinen-Atmosphäre sparsam
+    if (srand() < 0.6) tree(b.cx + sr(-4, 4), b.cz + sr(-4, 4));
+  }
+  // Stadtbaum im Pflanzkübel
+  function streetTree(x, z) {
+    box(wg, x - 0.55, 0.15, z - 0.55, x + 0.55, 0.45, z + 0.55, hexc('#3a3d45'));
+    lineBox(wg, x, 0.45, z, x, 2.6, z, 0.16, 0, C.trunk);
+    ellipGeo(wg, x, 3.3, z, 1.25, 1.1, 1.25, C.leaf2, 8);
+    ellipGeo(wg, x + 0.3, 3.9, z - 0.2, 0.85, 0.75, 0.85, C.leaf, 8);
+    addCol(x - 0.5, z - 0.5, x + 0.5, z + 0.5, 0.6);
+  }
+  // Bank (Sitzfläche zur Straße), optional mit sitzender Person
+  function bench(x, z, nx, nz) {
+    const W = hexc('#6b4a32'), M = hexc('#22252b');
+    faceBox(x, z, nx, nz, -0.9, 0.9, 0.42, 0.5, -0.25, 0.25, W);
+    faceBox(x, z, nx, nz, -0.9, 0.9, 0.5, 0.95, -0.3, -0.22, W);
+    for (const a of [-0.75, 0.75]) faceBox(x, z, nx, nz, a - 0.05, a + 0.05, 0.15, 0.42, -0.2, 0.2, M);
+    const ex = Math.abs(nx) > 0.5 ? 0.3 : 0.95, ez = Math.abs(nx) > 0.5 ? 0.95 : 0.3;
+    addCol(x - ex, z - ez, x + ex, z + ez, 0.5);
+    if (nr() < 0.6) addSpot(x + nx * 0.05 + nz * 0.35, z + nz * 0.05 - nx * 0.35, yawOf(nx, nz), 'sit');
+  }
+  // Bushaltestelle: Leuchtwerbung an der Bordsteinkante, Schild, wartende Leute
+  function busStop(x, z, nx, nz) {
+    const rx = nz, rz = -nx, ad = ncol();
+    faceBox(x, z, -nx, -nz, -1.2, 1.2, 0.15, 2.4, -0.12, 0.12, hexc('#1b1d22'));
+    faceBox(x, z, -nx, -nz, -1.05, 1.05, 0.35, 2.25, -0.16, 0.16, [ad[0] * 0.8, ad[1] * 0.8, ad[2] * 0.8, 4]);
+    lineBox(wg, x + rx * 1.8, 0.15, z + rz * 1.8, x + rx * 1.8, 3.0, z + rz * 1.8, 0.08, 0, hexc('#2c2f36'));
+    neonText('BUS', x + rx * 1.8 - nx * 0.1, 3.25, z + rz * 1.8 - nz * 0.1, -rx, -rz, 0.32, hexc('#ffe14d'));
+    const ex = Math.abs(nx) > 0.5 ? 0.2 : 1.25, ez = Math.abs(nx) > 0.5 ? 1.25 : 0.2;
+    addCol(x - ex, z - ez, x + ex, z + ez, 2.4);
+    addLight(x - nx * 1, 2, z - nz * 1, ad, 6, 1.1);
+    const n = 1 + Math.floor(nr() * 3);
+    for (let k = 0; k < n; k++) addSpot(x - rx * (k - 1) * 1.1 - nx * 0.85, z - rz * (k - 1) * 1.1 - nz * 0.85, yawOf(nx, nz) + nrr(-0.5, 0.5), nr() < 0.5 ? 'phone' : 'wait');
+  }
+  // Imbissstand mit Schirm, Verkäufer und Kundschaft
+  function foodStall(x, z, nx, nz) {
+    const col = ncol(), rx = nz, rz = -nx;
+    roundBox(wg, x - 1.1, 0.15, z - 1.1, x + 1.1, 1.1, z + 1.1, 0.12, hexc('#c9ccd2'));
+    lineBox(wg, x, 1.1, z, x, 2.9, z, 0.08, 0, hexc('#2c2f36'));
+    ellipGeo(wg, x, 3.0, z, 1.9, 0.35, 1.9, [col[0] * 0.85, col[1] * 0.85, col[2] * 0.85, 4], 10);
+    neonText('FOOD', x + nx * 1.13, 0.7, z + nz * 1.13, rx, rz, 0.32, hexc('#ffe14d'));
+    addCol(x - 1.1, z - 1.1, x + 1.1, z + 1.1, 1.1);
+    addLight(x + nx * 1.5, 2.2, z + nz * 1.5, col, 8, 1.3);
+    addSpot(x - nx * 1.55, z - nz * 1.55, yawOf(nx, nz), 'vendor');
+    for (const a of [-0.7, 0.7]) addSpot(x + nx * 2.1 + rx * a, z + nz * 2.1 + rz * a, yawOf(-nx, -nz) + a * 0.3, 'wait');
+  }
+  // Gruppe, die zusammensteht und redet
+  function chatGroup(x, z) {
+    const n = 2 + Math.floor(nr() * 2), a0 = nr() * TAU;
+    for (let k = 0; k < n; k++) { const a = a0 + k / n * TAU, px = x + Math.sin(a) * 0.7, pz = z + Math.cos(a) * 0.7; addSpot(px, pz, Math.atan2(x - px, z - pz), 'chat'); }
+  }
+  // Straßenmöbel entlang der Gehwege eines Blocks (Bäume an der Bordsteinkante, Bänke an der Hauswand, Haltestelle)
+  function streetFurniture(b, dist, special) {
+    const sides = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+    const busSide = !special && (dist === 'downtown' || dist === 'altstadt') && nr() < 0.5 ? Math.floor(nr() * 4) : -1;
+    sides.forEach((n, si) => {
+      // Punkt auf dem Gehweg: t entlang der Seite (-1..1), o = Abstand von der Bordsteinkante
+      const at = (t, o) => n[0] ? [n[0] < 0 ? b.x0 + o : b.x1 - o, b.cz + t * BLOCK / 2] : [b.cx + t * BLOCK / 2, n[1] < 0 ? b.z0 + o : b.z1 - o];
+      if (dist !== 'hafen' && dist !== 'villen') for (const t of [-0.52, 0.52]) { const p = at(t, 0.62); streetTree(p[0], p[1]); }
+      if (si === busSide) { const p = at(0.32, 0.3); busStop(p[0], p[1], n[0], n[1]); }
+      else if (!special && dist !== 'hafen' && nr() < 0.5) { const p = at(nr() < 0.5 ? -0.25 : 0.25, 2.6); bench(p[0], p[1], n[0], n[1]); }
+    });
+    // Dampf aus Gullydeckeln auf der Straße vor dem Block
+    if (nr() < 0.35) {
+      const vx = b.cx + nrr(-12, 12), vz = b.z0 - ROAD / 2 + nrr(-2, 2);
+      quad(wg, vx - 0.45, vz - 0.45, vx + 0.45, vz + 0.45, 0.03, hexc('#1a1b1f'));
+      vents.push({ x: vx, z: vz, t: nr() });
+    }
+  }
+  // Platz in Downtown: Pflaster, Brunnen mit Leuchtring, Bänke, Imbiss, Gruppe
+  function plaza(x0, z0, x1, z1, b) {
+    const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+    quad(wg, x0, z0, x1, z1, 0.153, hexc('#4c4f57'));
+    latheAt(wg, [[0, 3.2, 3.2, hexc('#7a7d84')], [0.6, 3.2, 3.2, hexc('#7a7d84')], [0.6, 2.9, 2.9, hexc('#2a5f8a', 4)], [0.62, 0, 0, hexc('#2a5f8a', 4)]], 16, cx, 0.15, cz);
+    latheAt(wg, [[0, 0.5, 0.5, hexc('#7a7d84')], [2.4, 0.35, 0.35, hexc('#7a7d84')], [2.4, 0.9, 0.9, hexc('#7a7d84')], [2.7, 0, 0, hexc('#7a7d84')]], 10, cx, 0.75, cz);
+    roofLine(cx - 2.6, cz - 2.6, cx + 2.6, cz + 2.6, 0.78, hexc('#22e6ff'), 0.04);
+    addCol(cx - 3.2, cz - 3.2, cx + 3.2, cz + 3.2, 0.6);
+    addLight(cx, 2, cz, rgb('#22e6ff'), 9, 1.2);
+    const fs = facades(b, x0, z0, x1, z1);
+    const f = fs[0] || [cx, z0, 0, -1];
+    foodStall(cx + f[2] * 6 + f[3] * 5.5, cz + f[3] * 6 - f[2] * 5.5, f[2], f[3]);
+    for (const [dx, dz, nx, nz] of [[0, 5.5, 0, 1], [0, -5.5, 0, -1], [5.5, 0, 1, 0], [-5.5, 0, -1, 0]]) if (nr() < 0.6) bench(cx + dx, cz + dz, -nx, -nz);
+    chatGroup(cx - f[3] * 6 - f[2] * 4, cz + f[2] * 6 - f[3] * 4);
+    streetTree(x0 + 2, z0 + 2); streetTree(x1 - 2, z1 - 2);
+  }
+  // Downtown: Ladensockel mit Schaufenstern und darüber gestufte Türme mit Leuchtkanten und Antennen
+  function towerBlock(b) {
+    const lx0 = b.x0 + SW, lz0 = b.z0 + SW, half = (BLOCK - 2 * SW) / 2;
+    const plazaQ = srand() < 0.55 ? Math.floor(srand() * 4) : -1;
+    for (let q = 0; q < 4; q++) {
+      const a = q % 2, c = q >> 1, x0 = lx0 + a * half + 0.6, z0 = lz0 + c * half + 0.6, x1 = x0 + half - 1.2, z1 = z0 + half - 1.2;
+      if (q === plazaQ) { plaza(x0, z0, x1, z1, b); continue; }
+      const hp = 7.4;
+      building(x0, z0, x1, z1, hp, '#20242c', false);
+      for (const f of facades(b, x0, z0, x1, z1)) {
+        // zwei Läden je Straßenseite, darüber ein beleuchtetes Glasband
+        for (const s of [-1, 1]) storefront(f[0] + f[3] * s * f[4] / 4, f[1] - f[2] * s * f[4] / 4, f[2], f[3], f[4] / 2 - 0.3);
+        faceBox(f[0], f[1], f[2], f[3], -f[4] / 2 + 0.3, f[4] / 2 - 0.3, 4.5, 6.6, 0, 0.05, hexc('#3d5a78', 4));
+      }
+      decorate(b, x0, z0, x1, z1, hp, 'downtown', 0.6, false);
+      // Turm mit bis zu drei Stufen
+      const H = sr(32, 96), col = spick(['#3a4250', '#2c3442', '#454a5c', '#262c38', '#4a5566', '#363048', '#2f3b45']);
+      let ti = sr(1.6, 3.0), tx0 = x0 + ti, tz0 = z0 + ti, tx1 = x1 - ti, tz1 = z1 - ti;
+      const h1 = H * sr(0.55, 0.75);
+      building(tx0, tz0, tx1, tz1, h1, col, true);
+      roofLine(tx0 - 0.16, tz0 - 0.16, tx1 + 0.16, tz1 + 0.16, h1 + 0.55, ncol(), 0.06);
+      let top = h1 + 0.5;
+      if (H - h1 > 8) {
+        const k = sr(1.4, 2.6); tx0 += k; tz0 += k; tx1 -= k; tz1 -= k;
+        box(wg, tx0, top, tz0, tx1, H, tz1, hexc(col, 1));
+        box(wg, tx0 - 0.12, H, tz0 - 0.12, tx1 + 0.12, H + 0.45, tz1 + 0.12, hexc('#2a2c31'));
+        roofLine(tx0 - 0.14, tz0 - 0.14, tx1 + 0.14, tz1 + 0.14, H + 0.5, ncol(), 0.06);
+        top = H + 0.45;
+      }
+      if (srand() < 0.4) {
+        const sx = (tx0 + tx1) / 2, sz = (tz0 + tz1) / 2, sh = sr(7, 16);
+        lineBox(wg, sx, top, sz, sx, top + sh, sz, 0.3, 0, hexc('#4a4e58'));
+        tube(sx, top + sh, sz, sx, top + sh + 0.8, sz, 0.14, hexc('#ff3355'));
+      }
+      decorate(b, tx0, tz0, tx1, tz1, top - 0.5, 'downtown', 0, true);
     }
   }
 
@@ -652,6 +861,7 @@ function buildGame(canvas, radar, root, ui) {
     for (const l of L) lamp(l[0], l[1], l[2], l[3]);
     const lx0 = b.x0 + SW, lz0 = b.z0 + SW, lx1 = b.x1 - SW, lz1 = b.z1 - SW, half = (lx1 - lx0) / 2;
     const key = i + ',' + j;
+    if (!park) streetFurniture(b, dist, !!SPECIAL[key]);
     if (SPECIAL[key]) {
       SPECIAL[key]();
       if (dist === 'palmen' || dist === 'hafen') { palm(lx0 + 2, lz1 - 2, sr(7, 10)); palm(lx1 - 2, lz1 - 2, sr(7, 10)); }
@@ -672,29 +882,15 @@ function buildGame(canvas, radar, root, ui) {
         if (Math.abs(tx - b.cx) < 6 || Math.abs(tz - b.cz) < 6) continue;
         if (dist === 'palmen' && t % 2) palm(tx, tz, sr(7, 11)); else tree(tx, tz);
       }
+      // Leben im Park: Bänke am Weg, eine Gruppe auf der Wiese
+      bench(b.cx + 3, lz0 + 8, -1, 0); bench(b.cx - 3, lz1 - 8, 1, 0); bench(lx0 + 8, b.cz - 3, 0, 1);
+      chatGroup(b.cx + 9, b.cz + 9);
       continue;
     }
     if (dist === 'downtown') {
-      for (let a = 0; a < 2; a++) for (let c = 0; c < 2; c++) {
-        const sx = lx0 + a * half, sz = lz0 + c * half, fw = sr(12, 16), fd = sr(12, 16), h = sr(24, 72);
-        const x0 = sx + (half - fw) / 2, z0 = sz + (half - fd) / 2;
-        const col = spick(['#3a4250', '#2c3442', '#454a5c', '#262c38', '#4a5566', '#363048']);
-        building(x0, z0, x0 + fw, z0 + fd, h, col, true);
-        if (srand() < 0.6) {
-          const h2 = h * sr(0.15, 0.35); box(wg, x0 + 2, h + 0.5, z0 + 2, x0 + fw - 2, h + 0.5 + h2, z0 + fd - 2, hexc(col, 1));
-          roofLine(x0 + 1.95, z0 + 1.95, x0 + fw - 1.95, z0 + fd - 1.95, h + 0.5 + h2, ncol(), 0.06);
-        }
-        box(wg, x0 + 1.5, h + 0.5, z0 + 1.5, x0 + 4, h + 2, z0 + 4, hexc('#3a3c42'));
-        decorate(b, x0, z0, x0 + fw, z0 + fd, h, 'downtown');
-      }
+      towerBlock(b);
     } else if (dist === 'altstadt') {
-      for (let a = 0; a < 2; a++) for (let c = 0; c < 2; c++) {
-        const sx = lx0 + a * half, sz = lz0 + c * half;
-        if (srand() < 0.15) { tree(sx + half / 2, sz + half / 2); continue; }
-        const h = sr(8, 20);
-        building(sx + 1.2, sz + 1.2, sx + half - 1.2, sz + half - 1.2, h, spick(['#6e4a3e', '#5c4b45', '#7a6250', '#4f3f3a', '#6b5a55', '#58443f']), true);
-        decorate(b, sx + 1.2, sz + 1.2, sx + half - 1.2, sz + half - 1.2, h, 'altstadt');
-      }
+      rowBlock(b);
     } else if (dist === 'palmen') {
       for (let a = 0; a < 2; a++) for (let c = 0; c < 2; c++) {
         const sx = lx0 + a * half, sz = lz0 + c * half;
@@ -733,21 +929,400 @@ function buildGame(canvas, radar, root, ui) {
       }
     }
   }
+  // ================= Landschaft: Insel, Berge, Küste =================
+  // +x zeigt nach Westen, +z nach Norden (wie auf dem Radar); die Stadt liegt auf [0, W]².
+  // Fahrbares Land bleibt flach (y ≈ 0), damit Fahrphysik und KI unverändert bleiben. Berge und Wasser sperrt ein grobes Raster (tb).
+  const mix3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+  const smooth = (e0, e1, v) => { const t = clamp((v - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
+  const hash2 = (i, j) => { const n = Math.sin(i * 127.1 + j * 311.7) * 43758.5453; return n - Math.floor(n); };
+  function vnoise(x, z) {
+    const i = Math.floor(x), j = Math.floor(z), fx = x - i, fz = z - j, u = fx * fx * (3 - 2 * fx), v = fz * fz * (3 - 2 * fz);
+    return lerp(lerp(hash2(i, j), hash2(i + 1, j), u), lerp(hash2(i, j + 1), hash2(i + 1, j + 1), u), v);
+  }
+  const fbm = (x, z) => vnoise(x, z) * 0.55 + vnoise(x * 2.1 + 5.2, z * 2.1 + 1.3) * 0.3 + vnoise(x * 4.3 + 9.1, z * 4.3 + 3.7) * 0.15;
+  // Abstand zu einem Polygon (innen positiv) bzw. zu einer offenen Linie
+  function sdPoly(poly, x, z) {
+    let d = Infinity, inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const ax = poly[j][0], az = poly[j][1], ex = poly[i][0] - ax, ez = poly[i][1] - az;
+      const t = clamp(((x - ax) * ex + (z - az) * ez) / (ex * ex + ez * ez), 0, 1);
+      d = Math.min(d, Math.hypot(x - ax - ex * t, z - az - ez * t));
+      if ((az > z) !== (poly[i][1] > z) && x < ax + (z - az) / ez * ex) inside = !inside;
+    }
+    return inside ? d : -d;
+  }
+  function distLine(line, x, z) {
+    let d = Infinity;
+    for (let i = 0; i < line.length - 1; i++) {
+      const ax = line[i][0], az = line[i][1], ex = line[i + 1][0] - ax, ez = line[i + 1][1] - az;
+      const t = clamp(((x - ax) * ex + (z - az) * ez) / (ex * ex + ez * ez || 1), 0, 1);
+      d = Math.min(d, Math.hypot(x - ax - ex * t, z - az - ez * t));
+    }
+    return d;
+  }
+  // Linienzug mit abgerundeten Ecken (quadratische Bézierbögen)
+  function roundPath(pts, radii) {
+    const out = [pts[0]];
+    for (let i = 1; i < pts.length - 1; i++) {
+      const p = pts[i], a = pts[i - 1], b = pts[i + 1];
+      const la = Math.hypot(p[0] - a[0], p[1] - a[1]), lb = Math.hypot(b[0] - p[0], b[1] - p[1]), ra = Math.min(radii[i], la / 2), rb = Math.min(radii[i], lb / 2);
+      const t1 = [p[0] + (a[0] - p[0]) / la * ra, p[1] + (a[1] - p[1]) / la * ra], t2 = [p[0] + (b[0] - p[0]) / lb * rb, p[1] + (b[1] - p[1]) / lb * rb];
+      for (let k = 0; k <= 8; k++) { const t = k / 8, u = 1 - t; out.push([u * u * t1[0] + 2 * u * t * p[0] + t * t * t2[0], u * u * t1[1] + 2 * u * t * p[1] + t * t * t2[1]]); }
+    }
+    out.push(pts[pts.length - 1]);
+    return out;
+  }
+
+  const ISLAND = [[-25, -1], [445, -1], [520, -25], [610, -35], [700, 10], [760, 110], [790, 240], [790, 380], [760, 500], [700, 590], [610, 660], [500, 720],
+    [380, 750], [260, 755], [140, 735], [40, 700], [-60, 650], [-150, 580], [-205, 480], [-225, 360], [-220, 240], [-205, 140], [-185, 60], [-150, 5], [-90, -25]];
+  const ISLE_C = [-185, -165], ISLE = [];
+  for (let k = 0; k < 16; k++) { const a = k / 16 * TAU; ISLE.push([ISLE_C[0] + Math.cos(a) * 62 * (1 + 0.12 * Math.sin(a * 3)), ISLE_C[1] + Math.sin(a) * 52 * (1 + 0.1 * Math.cos(a * 2))]); }
+  const RIDGE = [[760, 520], [650, 630], [520, 690], [390, 715], [270, 715], [150, 700], [40, 665], [-70, 610], [-160, 530], [-200, 440]];
+  const LAKE = { x: 130, z: 600, rx: 50, rz: 28 };
+  const BRIDGE = [[-38, 2], [-150, -125]];
+  const PIERS = [[-172, 45, -218], [-185, 75, -230], [-192, 100, -236]]; // Jachthafen: [Landseite x, z, Wasserseite x]
+  // Straßen außerhalb der Stadt: Ringstraße, Zubringer zu den Rasterstraßen und Stichstraßen
+  const RING = roundPath([[0, 7], [-60, 7], [-60, 480], [480, 480], [480, 7], [420, 7]], [0, 22, 70, 70, 22, 0]);
+  const ROADS = [RING];
+  for (const k of [1, 3, 5]) ROADS.push([[roadC(k), W], [roadC(k), 480]]);
+  for (const k of [2, 4, 6]) { ROADS.push([[W, roadC(k)], [480, roadC(k)]]); ROADS.push([[0, roadC(k)], [-60, roadC(k)]]); }
+  ROADS.push([[480, 239], [505, 239]], [[-60, 260], [-78, 260]], [[-60, 80], [-150, 80]], [[-60, 420], [-150, 420]], [[140, 480], [140, 548]]);
+  const FLAT_RECTS = [[-22, -1, 442, 442, 22], [495, 80, 720, 465, 25], [-200, 25, -110, 135, 18]];
+  const FLAT_CIRC = [[-130, 260, 62, 22], [-118, 420, 46, 20], [140, 545, 14, 10]];
+  function flatW(x, z) {
+    let w = 0;
+    for (const r of FLAT_RECTS) { const dx = Math.max(r[0] - x, 0, x - r[2]), dz = Math.max(r[1] - z, 0, z - r[3]); w = Math.max(w, 1 - smooth(0, r[4], Math.hypot(dx, dz))); }
+    for (const c of FLAT_CIRC) w = Math.max(w, 1 - smooth(c[2], c[2] + c[3], Math.hypot(x - c[0], z - c[1])));
+    if (w >= 1) return 1;
+    for (const l of ROADS) w = Math.max(w, 1 - smooth(14, 34, distLine(l, x, z)));
+    return w;
+  }
+  function mountainH(x, z) {
+    const d = distLine(RIDGE, x, z), n = fbm(x / 70, z / 70), w = 95 + 40 * n;
+    if (d > w) return 0;
+    const t = 1 - d / w;
+    return (35 + 60 * n) * t * t * (3 - 2 * t) * (0.85 + 0.3 * fbm(x / 18, z / 18));
+  }
+  // Geländehöhe: Meer, Strand, flaches Land, Berge, See; Straßen und Plätze werden eingeebnet
+  function terrainH(x, z) {
+    const d = Math.max(sdPoly(ISLAND, x, z), sdPoly(ISLE, x, z));
+    if (d < 0) return Math.max(-8, -0.7 + d * 0.12);
+    let h = -0.7 + Math.min(1, d / 26) * 0.67;
+    h += (fbm(x / 45, z / 45) - 0.5) * 0.22 * smooth(26, 60, d);
+    h += mountainH(x, z) * smooth(10, 60, d);
+    const ih = Math.hypot(x - ISLE_C[0], z - ISLE_C[1]);
+    if (ih < 30) h += 9 * (1 - (ih / 30) * (ih / 30));
+    const le = Math.hypot((x - LAKE.x) / LAKE.rx, (z - LAKE.z) / LAKE.rz);
+    if (le < 1.6) h = lerp(-2.5, h, smooth(0.85, 1.6, le));
+    return lerp(h, -0.03, flatW(x, z) * clamp(d / 12, 0, 1));
+  }
+  // Kollisionsraster (4 m): gesperrt sind Hänge und Wasser – außer Stadt, Brücke und Stege
+  const TG = 4, TX0 = -320, TZ0 = -280, TNX = 300, TNZ = 280, TX1 = TX0 + TNX * TG, TZ1 = TZ0 + TNZ * TG;
+  const terrHt = new Float32Array(TNX * TNZ), terrBl = new Uint8Array(TNX * TNZ);
+  function walkable(x, z) {
+    if (x > -3 && x < W + 3 && z > -0.5 && z < W + 3) return true;
+    if (distLine(BRIDGE, x, z) < 4.6) return true;
+    for (const p of PIERS) if (z > p[1] - 1.6 && z < p[1] + 1.6 && x < p[0] + 4 && x > p[2]) return true;
+    return false;
+  }
+  for (let j = 0; j < TNZ; j++) for (let i = 0; i < TNX; i++) {
+    const x = TX0 + (i + 0.5) * TG, z = TZ0 + (j + 0.5) * TG, h = terrainH(x, z), k = j * TNX + i;
+    terrHt[k] = h; terrBl[k] = (h > 0.3 || h < -0.32) && !walkable(x, z) ? 1 : 0;
+  }
+  function terrH(x, z) {
+    const i = Math.floor((x - TX0) / TG), j = Math.floor((z - TZ0) / TG);
+    return i < 0 || j < 0 || i >= TNX || j >= TNZ ? -8 : terrHt[j * TNX + i];
+  }
+
+  // ---- Geländenetz (10 m) mit Farben nach Höhe, Hang und Küstennähe ----
+  const terrG = geo();
+  (() => {
+    const TM = 10, MNX = 120, MNZ = 112, MX0 = -320, MZ0 = -280, S1 = MNX + 1;
+    const HV = new Float32Array(S1 * (MNZ + 1));
+    for (let j = 0; j <= MNZ; j++) for (let i = 0; i <= MNX; i++) HV[j * S1 + i] = terrainH(MX0 + i * TM, MZ0 + j * TM);
+    const hv = (i, j) => HV[clamp(j, 0, MNZ) * S1 + clamp(i, 0, MNX)];
+    const T = { sand: rgb('#a8946c'), grass: rgb('#45663b'), grass2: rgb('#36552f'), forest: rgb('#2a4530'), rock: rgb('#5d5955'), rock2: rgb('#7b766f'), bed: rgb('#2f3d40') };
+    const VN = [], VC = [];
+    for (let j = 0; j <= MNZ; j++) for (let i = 0; i <= MNX; i++) {
+      const x = MX0 + i * TM, z = MZ0 + j * TM, h = hv(i, j);
+      let nx = hv(i - 1, j) - hv(i + 1, j), ny = 2 * TM, nz = hv(i, j - 1) - hv(i, j + 1); const l = Math.hypot(nx, ny, nz); nx /= l; ny /= l; nz /= l;
+      let c;
+      if (h < -0.45) c = T.bed;
+      else {
+        const d = Math.max(sdPoly(ISLAND, x, z), sdPoly(ISLE, x, z)), n = fbm(x / 30, z / 30);
+        c = mix3(T.grass, T.grass2, n);
+        if (d < 30 && h < 0.2) c = mix3(T.sand, c, smooth(18, 30, d));
+        if (h > 0.4) c = mix3(c, T.forest, smooth(0.4, 4, h));
+        if (h > 26) c = mix3(c, T.rock, smooth(26, 50, h));
+        if (h > 52) c = mix3(c, T.rock2, smooth(52, 80, h));
+        if (ny < 0.75) c = mix3(c, T.rock, smooth(0.75, 0.55, ny));
+      }
+      VN.push([nx, ny, nz]); VC.push([c[0], c[1], c[2], 0]);
+    }
+    const put = (i, j) => { const k = j * S1 + i, n = VN[k], c = VC[k]; terrG.d.push(MX0 + i * TM, HV[k], MZ0 + j * TM, n[0], n[1], n[2], c[0], c[1], c[2], c[3]); };
+    for (let j = 0; j < MNZ; j++) for (let i = 0; i < MNX; i++) {
+      const x0 = MX0 + i * TM, z0 = MZ0 + j * TM;
+      if (Math.max(hv(i, j), hv(i + 1, j), hv(i, j + 1), hv(i + 1, j + 1)) < -0.66) continue; // liegt unter der Wasserfläche
+      if (x0 >= 2 && x0 + TM <= W - 2 && z0 >= 2 && z0 + TM <= W - 2) continue;                  // von der Stadt verdeckt
+      put(i, j); put(i + 1, j); put(i + 1, j + 1); put(i, j); put(i + 1, j + 1); put(i, j + 1);
+    }
+  })();
+  quad(wg, -1500, -1500, 2200, 2200, -0.6, C.water);
+
+  // ---- Straßen außerhalb der Stadt ----
+  function ribbon(g, pts, off0, off1, y, c) {
+    const n = pts.length, NS = [];
+    for (let i = 0; i < n; i++) {
+      const a = pts[Math.max(0, i - 1)], b = pts[Math.min(n - 1, i + 1)], dx = b[0] - a[0], dz = b[1] - a[1], l = Math.hypot(dx, dz) || 1;
+      NS.push([-dz / l, dx / l]);
+    }
+    for (let i = 0; i < n - 1; i++) {
+      const p = pts[i], q = pts[i + 1], a = NS[i], b = NS[i + 1];
+      const v = [[p[0] + a[0] * off0, p[1] + a[1] * off0], [p[0] + a[0] * off1, p[1] + a[1] * off1], [q[0] + b[0] * off1, q[1] + b[1] * off1], [q[0] + b[0] * off0, q[1] + b[1] * off0]];
+      for (const t of TRI) g.d.push(v[t][0], y, v[t][1], 0, 1, 0, c[0], c[1], c[2], c[3]);
+    }
+  }
+  function dashes(g, pts, w, y, c, dash, gap) {
+    let phase = 0;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p = pts[i], dx = pts[i + 1][0] - p[0], dz = pts[i + 1][1] - p[1], L = Math.hypot(dx, dz);
+      if (L < 1e-3) continue;
+      const ux = dx / L, uz = dz / L, nx = -uz * w / 2, nz = ux * w / 2;
+      let s = 0;
+      while (s < L - 1e-6) {
+        const inDash = phase < dash, step = Math.min(L - s, inDash ? dash - phase : dash + gap - phase);
+        if (inDash) {
+          const ax = p[0] + ux * s, az = p[1] + uz * s, bx = ax + ux * step, bz = az + uz * step;
+          const v = [[ax + nx, az + nz], [ax - nx, az - nz], [bx - nx, bz - nz], [bx + nx, bz + nz]];
+          for (const t of TRI) g.d.push(v[t][0], y, v[t][1], 0, 1, 0, c[0], c[1], c[2], c[3]);
+        }
+        s += step; phase = (phase + step) % (dash + gap);
+      }
+    }
+  }
+  const EDGE = hexc('#1fb5d0', 4), LINEY = C.line;
+  ROADS.forEach((r, k) => {
+    const y = k === 0 ? 0.026 : 0.022;
+    ribbon(wg, r, -6, 6, y, C.asphalt);
+    dashes(wg, r, 0.25, y + 0.004, LINEY, 3, 3);
+    ribbon(wg, r, 5.2, 5.4, y + 0.004, EDGE); ribbon(wg, r, -5.4, -5.2, y + 0.004, EDGE);
+  });
+  // Laternen entlang der Ringstraße
+  (() => {
+    let next = 20, run = 0;
+    for (let i = 0; i < RING.length - 1; i++) {
+      const p = RING[i], dx = RING[i + 1][0] - p[0], dz = RING[i + 1][1] - p[1], L = Math.hypot(dx, dz);
+      if (L < 1e-3) continue;
+      const ux = dx / L, uz = dz / L;
+      while (next <= run + L) { const s = next - run; lamp(p[0] + ux * s - uz * 7.4, p[1] + uz * s + ux * 7.4, uz, -ux); next += 48; }
+      run += L;
+    }
+  })();
+
+  // ---- Flughafen (Westen) ----
+  quad(wg, 530, 170, 606, 320, 0.02, hexc('#4a4d55'));
+  quad(wg, 645, 100, 675, 450, 0.025, hexc('#23252b'));
+  quad(wg, 605, 110, 619, 440, 0.022, C.asphalt);
+  quad(wg, 600, 135, 645, 149, 0.023, C.asphalt); quad(wg, 600, 401, 645, 415, 0.023, C.asphalt);
+  dashes(wg, [[660, 118], [660, 432]], 0.9, 0.03, hexc('#e8e8e2'), 12, 8);
+  for (let k = -5; k <= 5; k++) if (k) { quad(wg, 660 + k * 2.4 - 0.7, 104, 660 + k * 2.4 + 0.7, 114, 0.03, hexc('#e8e8e2')); quad(wg, 660 + k * 2.4 - 0.7, 436, 660 + k * 2.4 + 0.7, 446, 0.03, hexc('#e8e8e2')); }
+  for (let z = 104; z <= 446; z += 24) for (const s of [-1, 1]) {
+    box(wg, 660 + s * 15.6 - 0.25, 0, z - 0.25, 660 + s * 15.6 + 0.25, 0.35, z + 0.25, hexc('#bfeaff', 4));
+    box(wg, 612 + s * 7.4 - 0.2, 0, z - 0.2, 612 + s * 7.4 + 0.2, 0.25, z + 0.2, hexc('#3d7bff', 4));
+  }
+  building(505, 190, 530, 300, 11, '#2e3644', true);
+  roofLine(504.85, 189.85, 530.15, 300.15, 11.55, hexc('#22e6ff'), 0.07);
+  facadeSign(505, 245, -1, 0, 8.4, 'AIRPORT', 2.2, hexc('#22e6ff'), true);
+  facadeSign(530, 245, 1, 0, 8.4, 'GATE 1-6', 1.4, hexc('#ff2bd6'), false);
+  roundBox(wg, 516, 0, 322, 524, 26, 330, 0.6, hexc('#3a3f4a'));
+  roundBox(wg, 513, 26, 319, 527, 30, 333, 0.8, hexc('#5fc8e8', 4));
+  roundBox(wg, 512.5, 30, 318.5, 527.5, 31.2, 333.5, 0.4, hexc('#1c1e24'));
+  tube(520, 31.2, 326, 520, 33.5, 326, 0.12, hexc('#ff3355'));
+  addCol(516, 322, 524, 330, 31);
+  for (const z0 of [350, 405]) {
+    building(505, z0, 540, z0 + 45, 13, '#3d4250', false);
+    tube(540.1, 0.3, z0 + 4, 540.1, 10, z0 + 4, 0.08, hexc('#ff8a1f')); tube(540.1, 0.3, z0 + 41, 540.1, 10, z0 + 41, 0.08, hexc('#ff8a1f'));
+    tube(540.1, 10, z0 + 4, 540.1, 10, z0 + 41, 0.08, hexc('#ff8a1f'));
+  }
+  // Flugzeug: steht als fliegbarer Jet auf dem Vorfeld (siehe spawnPlane)
+  addLight(565, 8, 245, rgb('#bfeaff'), 30, 1.2);
+
+  // ---- Stadion (Osten) ----
+  function bandGeo(g, cx, cz, asp, ra, ya, rb, yb, dirH, dirY, c, seg) {
+    for (let k = 0; k < seg; k++) {
+      const a0 = k / seg * TAU, a1 = (k + 1) / seg * TAU, am = (a0 + a1) / 2;
+      const P = (r, y, a) => [cx + Math.cos(a) * r, y, cz + Math.sin(a) * r * asp];
+      const v = [P(ra, ya, a0), P(ra, ya, a1), P(rb, yb, a1), P(rb, yb, a0)];
+      const e1 = [v[1][0] - v[0][0], v[1][1] - v[0][1], v[1][2] - v[0][2]], e2 = [v[3][0] - v[0][0], v[3][1] - v[0][1], v[3][2] - v[0][2]];
+      let nx = e1[1] * e2[2] - e1[2] * e2[1], ny = e1[2] * e2[0] - e1[0] * e2[2], nz = e1[0] * e2[1] - e1[1] * e2[0];
+      const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
+      if (nx * Math.cos(am) * dirH + ny * dirY + nz * Math.sin(am) * dirH < 0) { nx = -nx; ny = -ny; nz = -nz; }
+      for (const t of TRI) g.d.push(v[t][0], v[t][1], v[t][2], nx, ny, nz, c[0], c[1], c[2], c[3]);
+    }
+  }
+  (() => {
+    const cx = -130, cz = 260, A = 0.82, SEG = 40;
+    bandGeo(wg, cx, cz, A, 48, 0, 51, 15, 1, 0, hexc('#454a55'), SEG);
+    bandGeo(wg, cx, cz, A, 48.65, 3.2, 48.75, 3.7, 1, 0, hexc('#22e6ff', 4), SEG);
+    bandGeo(wg, cx, cz, A, 50.42, 11.8, 50.55, 12.5, 1, 0, hexc('#ff2bd6', 4), SEG);
+    bandGeo(wg, cx, cz, A, 51, 15, 46, 15.4, 0, 1, hexc('#2c2f36'), SEG);
+    for (let k = 0; k < 6; k++) {
+      const t0 = k / 6, t1 = (k + 1) / 6;
+      bandGeo(wg, cx, cz, A, lerp(46, 32, t0), lerp(15.4, 2, t0), lerp(46, 32, t1), lerp(15.4, 2, t1), -1, 1, hexc(k % 2 ? '#3b2a52' : '#5a3d7a'), SEG);
+    }
+    bandGeo(wg, cx, cz, A, 32, 2, 31, 0.5, -1, 0, hexc('#2c2f36'), SEG);
+    bandGeo(wg, cx, cz, A, 31, 0.5, 0, 0.5, 0, 1, hexc('#2f7a3f'), SEG);
+    bandGeo(wg, cx, cz, A, 22.4, 0.52, 22, 0.52, 0, 1, hexc('#d8e0d8'), SEG);
+    addCol(cx - 51, cz - 42, cx + 51, cz + 42, 15);
+    facadeSign(cx + 49.6, cz, 1, 0, 9, 'ARENA', 3, hexc('#ff2bd6'), true);
+    for (const a of [0.6, 2.55, 3.75, 5.7]) {
+      const x = cx + Math.cos(a) * 56, z = cz + Math.sin(a) * 56 * A;
+      lineBox(wg, x, 0, z, x, 32, z, 0.7, 0, hexc('#3a3d45'));
+      roundBox(wg, x - 2.4, 31, z - 1.2, x + 2.4, 33.4, z + 1.2, 0.3, hexc('#f4fbff', 4));
+      addLight(lerp(x, cx, 0.25), 30, lerp(z, cz, 0.25), rgb('#dff4ff'), 55, 1.4);
+    }
+  })();
+
+  // ---- Jachthafen mit Riesenrad (Osten, an der Küste) ----
+  for (const p of PIERS) {
+    box(wg, p[2], 0, p[1] - 1.5, p[0] + 2, 0.3, p[1] + 1.5, hexc('#5a4632'));
+    for (let x = p[2] + 1; x < p[0]; x += 6) for (const s of [-1, 1]) box(wg, x - 0.2, -1.6, p[1] + s * 1.5 - 0.2, x + 0.2, 0.45, p[1] + s * 1.5 + 0.2, hexc('#3d3024'));
+    tube(p[2] + 0.5, 0.35, p[1] - 1.45, p[2] + 0.5, 0.35, p[1] + 1.45, 0.05, hexc('#22e6ff'));
+    for (let k = 0; k < 3; k++) for (const s of [-1, 1]) {
+      const bx = p[2] + 7 + k * 11, bz = p[1] + s * 4.2;
+      ellipGeo(wg, bx, -0.35, bz, 4.4, 0.95, 1.55, hexc(k % 2 ? '#e8eef2' : '#c9d4dc'), 10);
+      roundBox(wg, bx - 1.6, 0.4, bz - 0.9, bx + 1.2, 1.5, bz + 0.9, 0.25, hexc('#1c2430'));
+    }
+  }
+  const FW = { x: -163, y: 22, z: 112, r: 17 };
+  const fwT = geo(), fwG = geo();
+  (() => {
+    for (const s of [-1, 1]) for (const dz of [-9, 9]) lineBox(wg, FW.x + s * 3, 0, FW.z + dz, FW.x + s * 1.1, FW.y, FW.z, 0.6, 0, hexc('#3a3d45'));
+    roundBox(wg, FW.x - 4, 0, FW.z - 11, FW.x + 4, 0.6, FW.z + 11, 0.3, hexc('#2c2f36'));
+    addCol(FW.x - 4, FW.z - 11, FW.x + 4, FW.z + 11, 30);
+    const RIM = hexc('#ff2bd6'), SP = hexc('#22e6ff'), n = 36;
+    for (let k = 0; k < n; k++) {
+      const a0 = k / n * TAU, a1 = (k + 1) / n * TAU;
+      for (const sx of [-0.9, 0.9]) tubeTo(fwT, fwG, sx, Math.cos(a0) * FW.r, Math.sin(a0) * FW.r, sx, Math.cos(a1) * FW.r, Math.sin(a1) * FW.r, 0.12, RIM);
+    }
+    for (let k = 0; k < 12; k++) { const a = k / 12 * TAU; tubeTo(fwT, fwG, 0, 0, 0, 0, Math.cos(a) * FW.r, Math.sin(a) * FW.r, 0.07, SP); }
+    tubeTo(fwT, fwG, -1.2, 0, 0, 1.2, 0, 0, 0.3, SP);
+  })();
+  addLight(FW.x + 6, FW.y, FW.z, rgb('#ff2bd6'), 45, 1.6);
+
+  // ---- Leuchtturm auf der kleinen Insel und Brücke dorthin ----
+  function latheAt(g, rings, seg, ox, oy, oz) {
+    const t = geo(); latheGeo(t, rings, seg);
+    for (let k = 0; k < t.d.length; k += 10) { t.d[k] += ox; t.d[k + 1] += oy; t.d[k + 2] += oz; }
+    for (const v of t.d) g.d.push(v);
+  }
+  const LH = { x: ISLE_C[0], z: ISLE_C[1], y: terrainH(ISLE_C[0], ISLE_C[1]) - 0.3 };
+  (() => {
+    const Wc = hexc('#e8e8e2'), Rc = hexc('#c0392b'), rings = [];
+    for (let k = 0; k < 6; k++) rings.push([k * 3.6, 3.2 - k * 0.22, 3.2 - k * 0.22, k % 2 ? Rc : Wc]);
+    rings.push([21.6, 1.9, 1.9, hexc('#2c2f36')], [21.6, 2.6, 2.6, hexc('#2c2f36')], [22.1, 2.6, 2.6, hexc('#2c2f36')], [22.1, 1.6, 1.6, hexc('#fff2b0', 4)],
+      [25, 1.6, 1.6, hexc('#2c2f36')], [25, 2.0, 2.0, hexc('#2c2f36')], [26.6, 0, 0, hexc('#2c2f36')]);
+    latheAt(wg, rings, 14, LH.x, LH.y, LH.z);
+    addLight(LH.x, LH.y + 23.5, LH.z, rgb('#fff2b0'), 40, 1.6);
+  })();
+  (() => {
+    const ax = BRIDGE[0][0], az = BRIDGE[0][1], bx = BRIDGE[1][0], bz = BRIDGE[1][1], dx = bx - ax, dz = bz - az, L = Math.hypot(dx, dz), yaw = Math.atan2(dx, dz);
+    const px = Math.cos(yaw), pz = -Math.sin(yaw), mx = (ax + bx) / 2, mz = (az + bz) / 2;
+    boxC(wg, mx, -0.22, mz, 9, 0.5, L, hexc('#3a3d45'), yaw);
+    boxC(wg, mx, 0.032, mz, 7.6, 0.01, L, C.asphalt, yaw);
+    for (const s of [-1, 1]) {
+      boxC(wg, mx + px * s * 4.35, 0.55, mz + pz * s * 4.35, 0.18, 1.0, L, hexc('#2c2f36'), yaw);
+      tube(ax + px * s * 4.35, 1.1, az + pz * s * 4.35, bx + px * s * 4.35, 1.1, bz + pz * s * 4.35, 0.06, hexc('#22e6ff'));
+    }
+    for (let s = 12; s < L - 6; s += 18) boxC(wg, ax + dx / L * s, -2.5, az + dz / L * s, 2.2, 4.2, 2.2, hexc('#2c2f36'), yaw);
+  })();
+
+  // ---- Süden: Piers und Frachter im Hafen ----
+  for (const x of [60, 262, 362]) {
+    box(wg, x - 3, -0.6, -42, x + 3, 0.32, -1.2, hexc('#5d6068'));
+    for (let z = -6; z > -42; z -= 9) box(wg, x - 3.3, -2, z - 0.3, x + 3.3, 0.33, z + 0.3, hexc('#3a3d45'));
+  }
+  (() => {
+    roundBox(wg, 118, -3, -66, 205, 4.5, -50, 2, hexc('#6b2a2a'));
+    roundBox(wg, 190, 4.5, -64, 203, 13, -52, 1, hexc('#d8d8d2'));
+    for (let k = 0; k < 6; k++) for (let t = 0; t < 2; t++) box(wg, 124 + k * 10.5, 4.5 + t * 2.6, -63, 133 + k * 10.5, 7.1 + t * 2.6, -53, hexc(['#b03a2e', '#2e6fb0', '#d68b2a', '#3a8a4f', '#7a3ab0', '#a8a8a8'][(k + t * 3) % 6]));
+    tube(118.5, 4.6, -58, 205, 4.6, -58, 0.08, hexc('#ff8a1f'));
+  })();
+
+  // ---- Wohnsiedlung im Nordosten ----
+  for (let k = 0; k < 4; k++) for (const s of [-1, 1]) {
+    const x = -82 - k * 18, z = 420 + s * 16, h = sr(5, 8);
+    building(x - 6, z - 5, x + 6, z + 5, h, spick(['#e8c1a0', '#a8d5c9', '#f0d9a8', '#d7a9b8', '#c3d3e8']), true);
+    roofLine(x - 6.16, z - 5.16, x + 6.16, z + 5.16, h + 0.55, hexc(k % 2 ? '#ff2bd6' : '#22e6ff'), 0.05);
+  }
+
+  // ---- Schriftzug am Berg und Sendemast ----
+  (() => {
+    const text = 'NEON CITY', h = 9, s = h / 4, w = textUnits(text) * s, z = 650, col = hexc('#ff2bd6');
+    for (let k = 0; k < text.length; k++) {
+      const x = 240 + w / 2 - k * 3 * s - s, base = terrainH(x, z);
+      if (text[k] !== ' ') neonText(text[k], x, base + h / 2 + 0.6, z, -1, 0, h, col, 0.42);
+    }
+    const tx = 330, tz = 712, ty = terrainH(tx, tz) - 0.5;
+    for (const [ox, oz] of [[-4, -4], [4, -4], [4, 4], [-4, 4]]) lineBox(wg, tx + ox, ty, tz + oz, tx + ox * 0.12, ty + 48, tz + oz * 0.12, 0.35, 0, hexc('#4a4e58'));
+    for (const y of [16, 32]) { const k = 1 - y / 48 * 0.88; roofLine(tx - 4 * k, tz - 4 * k, tx + 4 * k, tz + 4 * k, ty + y, hexc('#ff3355'), 0.08); }
+    tube(tx, ty + 48, tz, tx, ty + 50, tz, 0.25, hexc('#ff3355'));
+  })();
+
+  // ---- Bäume: Laubbäume und Palmen im Flachland, Nadelbäume an den Hängen ----
+  function pine(x, y, z, s) {
+    latheAt(wg, [[0, 0.22 * s, 0.22 * s, C.trunk], [1.2 * s, 0.22 * s, 0.22 * s, C.trunk], [1.2 * s, 2.1 * s, 2.1 * s, C.leaf], [4.2 * s, 1.2 * s, 1.2 * s, C.leaf],
+      [4.2 * s, 1.6 * s, 1.6 * s, C.leaf2], [7.8 * s, 0, 0, C.leaf2]], 6, x, y, z);
+  }
+  for (let k = 0, placed = 0; k < 900 && placed < 70; k++) {
+    const x = sr(-220, 780), z = sr(-40, 700), h = terrainH(x, z), d = sdPoly(ISLAND, x, z);
+    if (h < -0.1 || h > 0.25 || d < 8 || flatW(x, z) > 0.15) continue;
+    if (x > -10 && x < W + 10 && z > -10 && z < W + 10) continue;
+    if (ROADS.some((r) => distLine(r, x, z) < 18)) continue;
+    if (d < 70) palm(x, z, sr(7, 11)); else tree(x, z);
+    placed++;
+  }
+  for (let k = 0, placed = 0; k < 2500 && placed < 260; k++) {
+    const x = sr(-230, 790), z = sr(380, 760), h = terrainH(x, z);
+    if (h < 2.5 || h > 45) continue;
+    const g = Math.hypot(terrainH(x + 3, z) - terrainH(x - 3, z), terrainH(x, z + 3) - terrainH(x, z - 3)) / 6;
+    if (g > 0.9) continue;
+    pine(x, h - 0.4, z, sr(0.8, 1.35));
+    placed++;
+  }
+
   const worldMesh = upload(wg);
   wg.d = null;
+  const terrainMesh = upload(terrG), fwTubes = upload(fwT), fwGlow = upload(fwG);
+  terrG.d = fwT.d = fwG.d = null;
   const neonTubes = upload(neonT), neonGlow = upload(neonG), flickTubes = upload(flickT), flickGlow = upload(flickG);
   neonT.d = neonG.d = flickT.d = flickG.d = null;
   const shopOf = (kind) => shops.find((s) => s.kind === kind);
 
   // ---- Minikarte vorrendern ----
-  const MM = 70, MAPS = W + MM * 2;
+  // 1 Pixel = 1 Meter über das ganze Geländeraster; x ist gespiegelt, damit Westen links liegt
   const mapCanvas = document.createElement('canvas');
-  mapCanvas.width = MAPS; mapCanvas.height = MAPS;
-  const mapX = (x) => (W - x) + MM, mapY = (z) => (W - z) + MM;
+  mapCanvas.width = TX1 - TX0; mapCanvas.height = TZ1 - TZ0;
+  const mapX = (x) => TX1 - x, mapY = (z) => TZ1 - z;
   (() => {
     const c = mapCanvas.getContext('2d');
-    c.fillStyle = '#56683f'; c.fillRect(0, 0, MAPS, MAPS);
-    c.fillStyle = '#2c5f7c'; c.fillRect(0, mapY(0), MAPS, MAPS);
+    // Gelände aus dem Höhenraster: Wasser, Strand, Land, Berge
+    const small = document.createElement('canvas'); small.width = TNX; small.height = TNZ;
+    const sc2 = small.getContext('2d'), img = sc2.createImageData(TNX, TNZ);
+    for (let j = 0; j < TNZ; j++) for (let i = 0; i < TNX; i++) {
+      const h = terrHt[j * TNX + i], p = ((TNZ - 1 - j) * TNX + (TNX - 1 - i)) * 4;
+      const col = h < -0.6 ? [34, 78, 108] : h < -0.2 ? [140, 126, 92] : h < 0.4 ? [74, 104, 62] : h < 25 ? [58, 86, 56] : h < 50 ? [92, 96, 84] : [128, 126, 118];
+      img.data[p] = col[0]; img.data[p + 1] = col[1]; img.data[p + 2] = col[2]; img.data[p + 3] = 255;
+    }
+    sc2.putImageData(img, 0, 0);
+    c.imageSmoothingEnabled = true; c.drawImage(small, 0, 0, mapCanvas.width, mapCanvas.height);
+    // Straßen außerhalb der Stadt, Flughafen, Stadion, Brücke
+    c.strokeStyle = '#2b2e33'; c.lineCap = 'round'; c.lineJoin = 'round';
+    for (const r of ROADS) { c.lineWidth = 12; c.beginPath(); r.forEach((p, k) => (k ? c.lineTo : c.moveTo).call(c, mapX(p[0]), mapY(p[1]))); c.stroke(); }
+    c.lineWidth = 9; c.beginPath(); c.moveTo(mapX(BRIDGE[0][0]), mapY(BRIDGE[0][1])); c.lineTo(mapX(BRIDGE[1][0]), mapY(BRIDGE[1][1])); c.stroke();
+    c.fillStyle = '#2b2e33'; c.fillRect(mapX(675), mapY(450), 30, 350); c.fillRect(mapX(619), mapY(440), 14, 330); c.fillRect(mapX(606), mapY(320), 76, 150);
+    c.fillStyle = '#5a3d7a'; c.beginPath(); c.ellipse(mapX(-130), mapY(260), 51, 42, 0, 0, TAU); c.fill();
+    c.fillStyle = '#2f7a3f'; c.beginPath(); c.ellipse(mapX(-130), mapY(260), 31, 25, 0, 0, TAU); c.fill();
     c.fillStyle = '#2b2e33'; c.fillRect(mapX(W), mapY(W), W, W);
     const BC = { downtown: '#6b6e73', altstadt: '#6f665a', palmen: '#5d7a45', villen: '#5a7d44', hafen: '#55585c', park: '#4f8a3f' };
     for (const b of blocks) {
@@ -775,54 +1350,200 @@ function buildGame(canvas, radar, root, ui) {
     taxi: { name: 'Taxi', L: 4.6, Wd: 1.9, H: 1.5, max: 33, acc: 11, grip: 7, colors: ['#f2c230'] },
     police: { name: 'Streifenwagen', L: 4.8, Wd: 1.95, H: 1.5, max: 47, acc: 16, grip: 8.5, colors: ['#15181d'] },
     van: { name: 'Lieferwagen', L: 5.3, Wd: 2.15, H: 2.35, max: 28, acc: 8, grip: 6, colors: ['#e8e8e2', '#3c5a8a', '#8a3c3c'] },
-    pickup: { name: 'Pick-up', L: 5.0, Wd: 2.0, H: 1.75, max: 37, acc: 12, grip: 6.5, colors: ['#6b4a2a', '#2e5e3e', '#9a9a9a', '#a33a2a'] }
+    pickup: { name: 'Pick-up', L: 5.0, Wd: 2.0, H: 1.75, max: 37, acc: 12, grip: 6.5, colors: ['#6b4a2a', '#2e5e3e', '#9a9a9a', '#a33a2a'] },
+    plane: { name: 'Neon Jet', L: 14, Wd: 3.0, H: 4.4, span: 13, max: 12, acc: 4, grip: 6, colors: ['#e8ecf2'] }
   };
-  function buildCarMesh(key, T) {
-    const g = geo(), hw = T.Wd / 2, hl = T.L / 2, H = T.H;
-    const paint = [1, 1, 1, 2], glass = hexc('#1e2a33'), tire = hexc('#121212'), dark = hexc('#1c1d20');
-    const head = hexc('#fff3c4', 4), tail = hexc('#ff2a1a', 4);
-    const low = 0.32, top = key === 'sport' ? low + H * 0.38 : low + H * 0.4;
-    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-      box(g, sx * (hw - 0.17) - 0.17, 0.0, sz * hl * 0.63 - 0.36, sx * (hw - 0.17) + 0.17, 0.72, sz * hl * 0.63 + 0.36, tire);
+  // ---- Autos: Karosserie als Folge abgerundeter Querschnitte entlang der Länge (+z = vorn) ----
+  // sec: { z, x (Mitte), wb/wt (halbe Breite unten/oben), yb/yt (Unter-/Oberkante), r (Eckradius) }
+  // col(x, y, z, nx, ny, nz) liefert die Farbe je Viereck, capCol die Farbe der Deckel vorn und hinten
+  function loftGeo(g, secs, col, capCol) {
+    const A = loftA, P = [];
+    for (const s of secs) {
+      const r = Math.max(0.002, Math.min(s.r, (s.yt - s.yb) / 2 - 0.001, s.wb, s.wt)), sx = s.x || 0;
+      const cs = [[s.wb - r, s.yb + r, -90], [s.wt - r, s.yt - r, 0], [-(s.wt - r), s.yt - r, 90], [-(s.wb - r), s.yb + r, 180]];
+      const ring = [];
+      for (const c of cs) for (let k = 0; k <= A; k++) { const a = (c[2] + 90 * k / A) * Math.PI / 180; ring.push([sx + c[0] + r * Math.cos(a), c[1] + r * Math.sin(a), s.z]); }
+      P.push(ring);
     }
-    box(g, -hw, low, -hl, hw, top, hl, paint);
-    box(g, -hw - 0.02, low, hl - 0.12, hw + 0.02, low + 0.22, hl + 0.06, dark);
-    box(g, -hw - 0.02, low, -hl - 0.06, hw + 0.02, low + 0.22, -hl + 0.12, dark);
-    box(g, -hw + 0.15, top - 0.22, hl, -hw + 0.6, top - 0.06, hl + 0.03, head);
-    box(g, hw - 0.6, top - 0.22, hl, hw - 0.15, top - 0.06, hl + 0.03, head);
-    box(g, -hw + 0.12, top - 0.22, -hl - 0.03, -hw + 0.55, top - 0.08, -hl, tail);
-    box(g, hw - 0.55, top - 0.22, -hl - 0.03, hw - 0.12, top - 0.08, -hl, tail);
-    if (key === 'van') {
-      box(g, -hw, top, -hl, hw, H, hl * 0.42, paint);
-      box(g, -hw * 0.95, top, hl * 0.42, hw * 0.95, H * 0.86, hl * 0.72, glass);
-      box(g, -hw * 0.95, H * 0.84, hl * 0.4, hw * 0.95, H * 0.9, hl * 0.72, paint);
-    } else if (key === 'pickup') {
-      box(g, -hw * 0.92, top, -hl * 0.02, hw * 0.92, H - 0.06, hl * 0.42, glass);
-      box(g, -hw * 0.9, H - 0.08, -hl * 0.02, hw * 0.9, H, hl * 0.38, paint);
-      box(g, -hw, top, -hl, -hw + 0.12, top + 0.45, -hl * 0.05, paint);
-      box(g, hw - 0.12, top, -hl, hw, top + 0.45, -hl * 0.05, paint);
-      box(g, -hw, top, -hl, hw, top + 0.45, -hl + 0.12, paint);
-    } else {
-      const zb = key === 'sport' ? -hl * 0.45 : -hl * 0.55, zf = key === 'sport' ? hl * 0.12 : hl * 0.25;
-      box(g, -hw * 0.88, top, zb, hw * 0.88, H - 0.06, zf, glass);
-      box(g, -hw * 0.86, H - 0.08, zb + 0.15, hw * 0.86, H + 0.01, zf - 0.2, paint);
-      if (key === 'sport') {
-        box(g, -hw * 0.7, top, -hl + 0.15, -hw * 0.6, top + 0.32, -hl + 0.3, dark);
-        box(g, hw * 0.6, top, -hl + 0.15, hw * 0.7, top + 0.32, -hl + 0.3, dark);
-        box(g, -hw * 0.95, top + 0.3, -hl + 0.05, hw * 0.95, top + 0.38, -hl + 0.45, paint);
+    const n = P.length, m = P[0].length, N = [];
+    for (let i = 0; i < n; i++) {
+      const row = [], s = secs[i], cy = (s.yb + s.yt) / 2;
+      for (let j = 0; j < m; j++) {
+        const a = P[i][(j + 1) % m], b = P[i][(j + m - 1) % m], c = P[Math.min(n - 1, i + 1)][j], d = P[Math.max(0, i - 1)][j];
+        const t1 = [a[0] - b[0], a[1] - b[1], a[2] - b[2]], t2 = [c[0] - d[0], c[1] - d[1], c[2] - d[2]];
+        let nx = t1[1] * t2[2] - t1[2] * t2[1], ny = t1[2] * t2[0] - t1[0] * t2[2], nz = t1[0] * t2[1] - t1[1] * t2[0];
+        const ox = P[i][j][0] - (s.x || 0), oy = P[i][j][1] - cy;
+        let l = Math.hypot(nx, ny, nz);
+        if (l < 1e-9) { nx = ox; ny = oy; nz = 0; l = Math.hypot(nx, ny) || 1; }
+        nx /= l; ny /= l; nz /= l;
+        if (nx * ox + ny * oy < 0) { nx = -nx; ny = -ny; nz = -nz; }
+        row.push([nx, ny, nz]);
       }
-      if (key === 'police') {
-        box(g, -hw - 0.012, low + 0.08, -hl * 0.32, -hw + 0.01, top - 0.04, hl * 0.32, [1, 1, 1, 3]);
-        box(g, hw - 0.01, low + 0.08, -hl * 0.32, hw + 0.012, top - 0.04, hl * 0.32, [1, 1, 1, 3]);
-        box(g, -0.62, H + 0.01, -0.12, -0.02, H + 0.15, 0.12, hexc('#ff2020', 4));
-        box(g, 0.02, H + 0.01, -0.12, 0.62, H + 0.15, 0.12, hexc('#2050ff', 4));
-      }
-      if (key === 'taxi') box(g, -0.35, H + 0.01, -0.15, 0.35, H + 0.22, 0.15, hexc('#fff6c8', 4));
+      N.push(row);
     }
+    const put = (v, nn, c) => g.d.push(v[0], v[1], v[2], nn[0], nn[1], nn[2], c[0], c[1], c[2], c[3]);
+    for (let i = 0; i < n - 1; i++) for (let j = 0; j < m; j++) {
+      const q = [[i, j], [i, (j + 1) % m], [i + 1, (j + 1) % m], [i + 1, j]];
+      let cx = 0, cy = 0, cz = 0, fx = 0, fy = 0, fz = 0;
+      for (const v of q) { const p = P[v[0]][v[1]], nn = N[v[0]][v[1]]; cx += p[0] / 4; cy += p[1] / 4; cz += p[2] / 4; fx += nn[0]; fy += nn[1]; fz += nn[2]; }
+      const fl = Math.hypot(fx, fy, fz) || 1, c = col(cx, cy, cz, fx / fl, fy / fl, fz / fl);
+      for (const t of TRI) { const v = q[t]; put(P[v[0]][v[1]], N[v[0]][v[1]], c); }
+    }
+    for (const i of [0, n - 1]) {
+      const s = secs[i], ctr = [s.x || 0, (s.yb + s.yt) / 2, s.z], nn = [0, 0, i === 0 ? -1 : 1];
+      const c = capCol || col(ctr[0], ctr[1], s.z, 0, 0, nn[2]);
+      for (let j = 0; j < m; j++) { put(ctr, nn, c); put(P[i][j], nn, c); put(P[i][(j + 1) % m], nn, c); }
+    }
+  }
+  // Abgerundeter Quader (Spoiler, Ladefläche, Dachschild …)
+  function roundBox(g, x0, y0, z0, x1, y1, z1, r, c) {
+    r = Math.min(r, (z1 - z0) / 2, (x1 - x0) / 2, (y1 - y0) / 2);
+    const hw = (x1 - x0) / 2, cx = (x0 + x1) / 2, secs = [];
+    for (const [z, e] of [[z0, 0.45], [z0 + r * 0.3, 0.85], [z0 + r, 1], [z1 - r, 1], [z1 - r * 0.3, 0.85], [z1, 0.45]]) {
+      const ins = r * (1 - e);
+      secs.push({ z: z, x: cx, wb: hw - ins, wt: hw - ins, yb: y0 + ins, yt: y1 - ins, r: r });
+    }
+    loftGeo(g, secs, () => c, c);
+  }
+  // Rad: Reifen mit gerundeter Lauffläche und Felge; side = +1 rechts, -1 links (Felge zeigt nach außen)
+  function wheelGeo(g, cx, cy, cz, R, w, side, tire, rim, seg) {
+    const t = geo();
+    latheGeo(t, [[-w / 2, 0, 0, tire], [-w / 2, R * 0.8, R * 0.8, tire], [-w / 2 + 0.04, R * 0.98, R * 0.98, tire], [w / 2 - 0.04, R * 0.98, R * 0.98, tire],
+      [w / 2, R * 0.8, R * 0.8, tire], [w / 2 + 0.004, R * 0.62, R * 0.62, rim], [w / 2 - 0.035, R * 0.55, R * 0.55, rim], [w / 2 - 0.02, R * 0.2, R * 0.2, rim],
+      [w / 2 + 0.012, 0, 0, rim]], seg || 16);
+    // Achse der Drehfigur (y) wird zur Querachse x
+    for (let k = 0; k < t.d.length; k += 10) {
+      const d = t.d;
+      g.d.push(cx + d[k + 1] * side, cy + d[k], cz + d[k + 2], d[k + 4] * side, d[k + 3], d[k + 5], d[k + 6], d[k + 7], d[k + 8], d[k + 9]);
+    }
+    // fünf Speichen
+    for (let s = 0; s < 5; s++) {
+      const a = s / 5 * TAU;
+      mIdent(GM); tr(GM, cx + side * (w / 2 - 0.02), cy, cz); rx(GM, a); tr(GM, 0, R * 0.36, 0); sc(GM, 0.03, R * 0.38, 0.06); boxM(g, GM, rim);
+    }
+  }
+  // Karosserieformen je Typ: gb/gf = Fuß von Heck-/Frontscheibe, r0..r1 = flaches Dach, hood = Absenkung der Motorhaube
+  const CAR_SHAPE = {
+    sedan: { gb: -0.62, r0: -0.36, r1: 0.1, gf: 0.36, hood: 0.08, R: 0.36 },
+    taxi: { gb: -0.62, r0: -0.36, r1: 0.1, gf: 0.36, hood: 0.08, R: 0.36 },
+    police: { gb: -0.62, r0: -0.36, r1: 0.1, gf: 0.36, hood: 0.08, R: 0.36 },
+    sport: { gb: -0.66, r0: -0.24, r1: -0.02, gf: 0.3, hood: 0.1, R: 0.34 },
+    pickup: { gb: -0.06, r0: -0.05, r1: 0.24, gf: 0.44, hood: 0.05, R: 0.4 },
+    van: { gb: -1, r0: -1, r1: 0.42, gf: 0.72, hood: 0.04, R: 0.38 }
+  };
+  function buildCarMesh(key, T, lod) {
+    const g = geo(), hw = T.Wd / 2, hl = T.L / 2, H = T.H, S = CAR_SHAPE[key];
+    const PAINT = [1, 1, 1, 2], DOOR = [1, 1, 1, 3], GLASS = hexc('#16202a'), TIRE = hexc('#141414'), RIM = hexc('#9aa0a8'), DARK = hexc('#17181b');
+    const HEAD = hexc('#e8f6ff', 4), DRL = hexc('#7fe8ff', 4), TAIL = hexc('#ff2238', 4);
+    const E = (cx, cy, cz, rx, ry, rz, c) => ellipGeo(g, cx, cy, cz, rx, ry, rz, c, lod ? 6 : 12);
+    const step = lod ? 0.22 : 0.07; loftA = lod ? 2 : 4;
+    const low = 0.3, top = key === 'van' ? low + H * 0.36 : low + H * 0.4;
+    const gb = S.gb * hl, r0 = S.r0 * hl, r1 = S.r1 * hl, gf = S.gf * hl, R = S.R, wz = hl * 0.63;
+    const archTop = Math.min(R * 2 + 0.08, top - 0.1), archR = R + 0.1;
+    // Unterbau: runde Enden, abfallende Haube, Radkästen
+    const secAt = (z) => {
+      const d = hl - Math.abs(z), e = d < 0.3 ? Math.sqrt(Math.max(0, 1 - Math.pow(1 - d / 0.3, 2))) : 1;
+      let yt = top - (1 - e) * 0.16, yb = low + (1 - e) * 0.1;
+      if (z > gf) yt -= (z - gf) / (hl - gf) * S.hood;
+      for (const s of [-1, 1]) { const dz = Math.abs(z - s * wz); if (dz < archR) yb = Math.max(yb, low + (archTop - low) * Math.sqrt(1 - Math.pow(dz / archR, 2))); }
+      return { z: z, wb: hw * (0.84 + 0.16 * e) - 0.02, wt: hw * (0.82 + 0.16 * e) - 0.05, yb: yb, yt: yt, r: 0.17 };
+    };
+    const zs = [];
+    for (const d of [0, 0.02, 0.06, 0.12, 0.2, 0.3]) { zs.push(-hl + d); zs.push(hl - d); }
+    for (let z = -hl + 0.37; z < hl - 0.36; z += step) zs.push(z);
+    zs.sort((a, b) => a - b);
+    loftGeo(g, zs.map(secAt), (x, y, z, nx) => {
+      if (y < low + 0.17 && Math.abs(z) > hl - 0.32) return DARK;
+      if (y < low + 0.1 && Math.abs(nx) > 0.5) return DARK;
+      if (key === 'police' && Math.abs(nx) > 0.6 && Math.abs(z) < hl * 0.34 && y > low + 0.14 && y < top - 0.06) return DOOR;
+      return PAINT;
+    });
+    // Kabine: schräge Scheiben, nach innen geneigte Seiten, Dachsäulen in Wagenfarbe
+    const gz = [gb, r0, r1, gf];
+    for (let z = gb; z < gf; z += step * 0.9) gz.push(z);
+    gz.sort((a, b) => a - b);
+    const cz = gz.filter((z, i) => i === 0 || z - gz[i - 1] > 0.005);
+    const wbg = hw * (key === 'van' ? 0.97 : 0.9) - 0.03, wtg = hw * (key === 'van' ? 0.9 : 0.7);
+    const cab = cz.map((z) => {
+      let yt = H;
+      if (z < r0) yt = top + (H - top) * (z - gb) / (r0 - gb);
+      else if (z > r1) yt = H - (H - top) * (z - r1) / (gf - r1);
+      yt = Math.max(top + 0.002, yt);
+      return { z: z, wb: wbg, wt: lerp(wbg, wtg, clamp((yt - top) / (H - top), 0, 1)), yb: top - 0.03, yt: yt, r: 0.12 };
+    });
+    const bp = (r0 + r1) / 2;
+    loftGeo(g, cab, (x, y, z, nx, ny) => {
+      if (ny > 0.88) return PAINT;
+      if (Math.abs(nx) > 0.6) {
+        if (y > H - 0.07 || y < top + 0.04) return PAINT;
+        if (key === 'van') return z > hl * 0.3 ? GLASS : PAINT;
+        if (Math.abs(z - bp) < 0.07) return PAINT;
+        return GLASS;
+      }
+      if (key === 'van' && z < 0) return Math.abs(x) < wtg * 0.4 && y > top + 0.35 && y < H - 0.15 && Math.abs(x) > 0.06 ? GLASS : PAINT;
+      return Math.abs(x) < wtg * 0.82 ? GLASS : PAINT;
+    }, PAINT);
+    // Räder
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) wheelGeo(g, sx * (hw - 0.17), R, sz * wz, R, 0.26, sx, TIRE, RIM, lod ? 8 : 16);
+    // Licht vorn: Scheinwerfer, LED-Leiste, Grill
+    const sf = secAt(hl - 0.05), sb = secAt(-hl + 0.05);
+    for (const s of [-1, 1]) E(s * hw * 0.62, sf.yt - 0.09, hl - 0.05, 0.2, 0.055, 0.07, HEAD);
+    E(0, sf.yt - 0.035, hl - 0.03, hw * 0.48, 0.012, 0.03, DRL);
+    E(0, low + 0.24, hl - 0.03, hw * 0.42, 0.07, 0.05, DARK);
+    // Heck: durchgehendes Leuchtband, Ecken, Kennzeichen
+    E(0, sb.yt - 0.08, -hl + 0.045, hw * 0.78, 0.035, 0.05, TAIL);
+    for (const s of [-1, 1]) E(s * hw * 0.7, sb.yt - 0.08, -hl + 0.05, 0.15, 0.055, 0.055, TAIL);
+    E(0, low + 0.3, -hl + 0.02, 0.2, 0.06, 0.02, hexc('#d8d8d0'));
+    // Außenspiegel
+    for (const s of [-1, 1]) E(s * (wbg + 0.07), top + 0.1, gf - 0.12, 0.07, 0.05, 0.1, PAINT);
+    if (key === 'pickup') {
+      // Ladefläche mit Bordwänden
+      quad(g, -hw + 0.1, -hl + 0.12, hw - 0.1, gb, top + 0.005, DARK);
+      for (const s of [-1, 1]) roundBox(g, s < 0 ? -hw + 0.04 : hw - 0.14, top - 0.05, -hl + 0.04, s < 0 ? -hw + 0.14 : hw - 0.04, top + 0.42, gb - 0.02, 0.04, PAINT);
+      roundBox(g, -hw + 0.04, top - 0.05, -hl + 0.04, hw - 0.04, top + 0.42, -hl + 0.14, 0.04, PAINT);
+    }
+    if (key === 'sport') {
+      for (const s of [-1, 1]) roundBox(g, s * hw * 0.62 - 0.04, top - 0.02, -hl + 0.2, s * hw * 0.62 + 0.04, top + 0.3, -hl + 0.3, 0.02, DARK);
+      roundBox(g, -hw * 0.92, top + 0.28, -hl + 0.06, hw * 0.92, top + 0.35, -hl + 0.42, 0.03, PAINT);
+    }
+    if (key === 'police') {
+      roundBox(g, -0.68, H - 0.02, -0.16, 0.68, H + 0.05, 0.16, 0.03, DARK);
+      E(-0.33, H + 0.08, 0, 0.3, 0.07, 0.13, hexc('#ff2020', 4));
+      E(0.33, H + 0.08, 0, 0.3, 0.07, 0.13, hexc('#2050ff', 4));
+    }
+    if (key === 'taxi') roundBox(g, -0.32, H - 0.02, -0.14, 0.32, H + 0.2, 0.14, 0.05, hexc('#fff6c8', 4));
+    loftA = 4;
+    return upload(g);
+  }
+  // Neon Jet: Ursprung am Boden unter der Rumpfmitte, +z = Nase, -x = rechte Tragfläche
+  function buildPlaneMesh() {
+    const g = geo(), PAINT = [1, 1, 1, 2], GLASS = hexc('#16202a'), DARK = hexc('#1c1e24'), GREY = hexc('#8a9098'), TIRE = hexc('#141414');
+    const E = (cx, cy, cz, rx, ry, rz, c) => ellipGeo(g, cx, cy, cz, rx, ry, rz, c, 14);
+    E(0, 1.9, 0, 1.1, 1.05, 7, PAINT);
+    E(0, 2.55, 2.8, 0.72, 0.6, 2.2, GLASS);
+    E(0, 2.05, 0, 1.12, 0.1, 6.2, hexc('#ff2bd6', 4));
+    roundBox(g, -6.5, 1.55, -1.2, 6.5, 1.85, 1.4, 0.15, PAINT);
+    roundBox(g, -0.12, 2.2, -6.8, 0.12, 4.4, -4.9, 0.1, PAINT);
+    roundBox(g, -0.13, 3.9, -6.8, 0.13, 4.3, -5.4, 0.08, hexc('#22e6ff', 4));
+    roundBox(g, -2.8, 2.15, -6.7, 2.8, 2.35, -5.3, 0.08, PAINT);
+    for (const s of [-1, 1]) {
+      E(s * 1.35, 2.35, -3.4, 0.48, 0.48, 1.5, GREY);
+      E(s * 1.35, 2.35, -4.85, 0.36, 0.36, 0.12, hexc('#22e6ff', 4));
+      E(s * 6.45, 1.7, 0.1, 0.12, 0.12, 0.25, hexc(s > 0 ? '#ff3355' : '#39ff88', 4));
+      // Hauptfahrwerk
+      lineBox(g, s * 1.6, 0.45, -0.4, s * 1.4, 1.5, -0.4, 0.14, 0, DARK);
+      E(s * 1.6, 0.42, -0.4, 0.16, 0.42, 0.42, TIRE);
+    }
+    lineBox(g, 0, 0.4, 4.6, 0, 1.4, 4.4, 0.12, 0, DARK);
+    E(0, 0.36, 4.6, 0.13, 0.36, 0.36, TIRE);
     return upload(g);
   }
   const carMeshes = {};
-  for (const k in CAR_TYPES) carMeshes[k] = buildCarMesh(k, CAR_TYPES[k]);
+  const carMeshesLo = {};
+  for (const k in CAR_TYPES) {
+    if (k === 'plane') { carMeshes[k] = carMeshesLo[k] = buildPlaneMesh(); continue; }
+    carMeshes[k] = buildCarMesh(k, CAR_TYPES[k]); carMeshesLo[k] = buildCarMesh(k, CAR_TYPES[k], true);
+  }
   const cars = [];
   let carId = 0;
   function spawnCar(type, x, z, yaw, mode) {
@@ -830,6 +1551,8 @@ function buildGame(canvas, radar, root, ui) {
     const c = { id: ++carId, type: type, T: T, mesh: carMeshes[type], x: x, z: z, y: groundY(x, z), yaw: yaw, vx: 0, vz: 0, steer: 0, speed: 0, hp: 100,
       paint: rgb(pick(T.colors)), paint2: [0.95, 0.95, 0.95], driver: null, mode: mode || 'parked', ai: null, siren: false,
       burnT: 0, onFire: false, wreck: false, deadT: 0, honkT: 0, stuckT: 0, revT: 0, cruise: rand(9, 13), deployed: false, inp: { thr: 0, steer: 0, hb: false } };
+    // Neon-Unterbodenbeleuchtung: Sportwagen immer, sonst ab und zu
+    if (type === 'sport' || (type !== 'police' && Math.random() < 0.22)) c.glow = rgb(pick(['#ff2bd6', '#22e6ff', '#a14bff', '#39ff88']));
     cars.push(c); return c;
   }
   const NOINP = { thr: 0, steer: 0, hb: false };
@@ -838,8 +1561,10 @@ function buildGame(canvas, radar, root, ui) {
     if (c.wreck || c.onFire) inp = NOINP;
     const fx = Math.sin(c.yaw), fz = Math.cos(c.yaw), rxv = -fz, rzv = fx;
     let fs = c.vx * fx + c.vz * fz, ls = c.vx * rxv + c.vz * rzv;
+    // Nitro: stärkere Beschleunigung und höhere Endgeschwindigkeit, solange es gezündet ist
+    const maxV = T.max * (inp.boost ? 1.45 : 1), accV = T.acc * (inp.boost ? 2.4 : 1);
     if (inp.thr > 0) {
-      if (fs < -0.5) fs += 24 * dt * inp.thr; else fs += T.acc * inp.thr * dt * (1 - Math.max(0, fs) / T.max);
+      if (fs < -0.5) fs += 24 * dt * inp.thr; else fs += accV * inp.thr * dt * (1 - Math.max(0, fs) / maxV);
     } else if (inp.thr < 0) {
       if (fs > 0.5) fs += 24 * dt * inp.thr; else fs += T.acc * 0.6 * inp.thr * dt * (1 - Math.max(0, -fs) / (T.max * 0.35));
     }
@@ -872,15 +1597,90 @@ function buildGame(canvas, radar, root, ui) {
       if (impact > 5) { if (c.driver === player) rumble(Math.min(1, impact / 15), 0.6, 160); damageCar(c, (impact - 5) * 2.2, c.driver === player); sfx('crash', Math.min(1, impact / 20), c.x, c.z); spawnSparks(c.x + nfx * off, 0.6, c.z + nfz * off, 6); }
     }
   }
+  // ================= Flugzeug =================
+  // Einfaches Arcade-Flugmodell: W/S regeln den Schub, A/D legen das Flugzeug in die Kurve, ↓/↑ ziehen die Nase hoch/runter.
+  // Abheben ab ~110 km/h, unter ~85 km/h reißt die Strömung ab und die Nase sackt. Sanft aufsetzen geht auf flachem Land.
+  const PLANE = { vmax: 80, vrot: 30, vstall: 19, apronX: 565, apronZ: 245 };
+  function planeGround(x, z) { return x > -2 && x < W + 2 && z > -1 && z < W + 2 ? groundY(x, z) : Math.max(terrH(x, z), -0.6); }
+  function spawnPlane() {
+    const c = spawnCar('plane', PLANE.apronX, PLANE.apronZ, Math.PI / 2, 'parked');
+    Object.assign(c, { paint: rgb('#e8ecf2'), glow: null, pitch: 0, roll: 0, thr: 0, air: false, looted: true });
+    return c;
+  }
+  function crashPlane(c) {
+    c.air = false; c.speed = 0; c.vx = c.vz = 0; c.thr = 0;
+    explodeCar(c);
+  }
+  function stepPlane(c, dt, inp) {
+    if (c.wreck) { stepCar(c, dt, NOINP); return; }
+    c.thr = clamp((c.thr || 0) + inp.thr * 0.45 * dt, 0, 1);
+    let sp = c.speed;
+    sp += (c.thr * PLANE.vmax - sp) * (c.air ? 0.28 : 0.35) * dt;
+    if (c.air) sp -= 9.8 * Math.sin(c.pitch) * dt;
+    else { sp -= sp * 0.05 * dt; if (inp.thr < 0 && c.thr === 0) sp -= 14 * dt; }
+    sp = clamp(sp, 0, PLANE.vmax * 1.25);
+    if (!c.air) {
+      // Rollen: lenken wie ein Auto, die Nase hebt sich erst ab Abhebegeschwindigkeit
+      c.roll += -c.roll * Math.min(1, 6 * dt);
+      c.yaw -= inp.steer * Math.min(1, sp / 6) * 0.55 * dt;
+      c.pitch = sp > PLANE.vrot ? clamp(c.pitch + inp.pitch * 0.6 * dt, 0, 0.3) : Math.max(0, c.pitch - dt);
+      if (c.pitch > 0.06 && sp > PLANE.vrot) c.air = true;
+    } else {
+      c.roll += (clamp(inp.steer, -1, 1) * 0.95 - c.roll) * Math.min(1, 2.2 * dt);
+      c.pitch = clamp(c.pitch + inp.pitch * 0.8 * dt, -0.75, 0.75);
+      if (!inp.pitch) c.pitch -= c.pitch * 0.25 * dt; // ohne Eingabe langsam zurück in den Geradeausflug
+      c.yaw -= Math.sin(c.roll) * (0.25 + sp / 200) * dt;
+      if (sp < PLANE.vstall) c.pitch -= 0.6 * dt * (1 - sp / PLANE.vstall);
+      // Abfanghilfe kurz über dem Boden: Nase leicht auf Landelage
+      const alt = c.y - planeGround(c.x, c.z);
+      if (alt < 10 && !inp.pitch && c.pitch < 0.02) c.pitch += (0.02 - c.pitch) * Math.min(1, 1.5 * dt);
+    }
+    c.speed = sp;
+    const cp = Math.cos(c.pitch), fx = Math.sin(c.yaw) * cp, fz = Math.cos(c.yaw) * cp;
+    c.vx = fx * sp; c.vz = fz * sp;
+    c.x += c.vx * dt; c.z += c.vz * dt;
+    if (!c.air) {
+      c.y = planeGround(c.x, c.z);
+      // am Boden: Rumpf stößt wie ein Auto gegen Gebäude, Hänge und Wasser
+      const nfx = Math.sin(c.yaw), nfz = Math.cos(c.yaw);
+      for (const o of [-5, 0, 5]) {
+        const pt = { x: c.x + nfx * o, z: c.z + nfz * o }, h = circleCollide(pt, 1.5, 0);
+        if (h.hit) {
+          c.x += pt.x - (c.x + nfx * o); c.z += pt.z - (c.z + nfz * o);
+          if (sp > 8) { damageCar(c, (sp - 8) * 3, true); sfx('crash', 0.6, c.x, c.z); }
+          c.speed = sp = Math.min(sp, 3);
+        }
+      }
+      return;
+    }
+    // Steigen/Sinken; ohne genug Fahrt fällt es durch
+    const vy = Math.sin(c.pitch) * sp - (1 - clamp(sp / PLANE.vstall, 0, 1)) * 9;
+    c.y = Math.min(420, c.y + vy * dt);
+    if (c.thr > 0.55 && Math.random() < dt * 30) {
+      for (const s of [-1, 1]) addParticle(c.x - fx * 5 - Math.cos(c.yaw) * s * 1.35, c.y + 2.3, c.z - fz * 5 + Math.sin(c.yaw) * s * 1.35, -fx * 8, 0, -fz * 8, 0.16, 0.18, [0.3, 0.8, 1], 0);
+    }
+    let hitB = false;
+    forNear(c.x, c.z, 3, (k) => { if (!hitB && c.y < k.h && c.x > k.x0 - 1 && c.x < k.x1 + 1 && c.z > k.z0 - 1 && c.z < k.z1 + 1) hitB = true; });
+    if (hitB) { crashPlane(c); return; }
+    const g = planeGround(c.x, c.z);
+    if (c.y <= g + 0.05) {
+      const ti = Math.floor((c.x - TX0) / TG), tj = Math.floor((c.z - TZ0) / TG);
+      const flat = g > -0.5 && !(ti >= 0 && tj >= 0 && ti < TNX && tj < TNZ && terrBl[tj * TNX + ti] && !(c.x > -2 && c.x < W + 2 && c.z > -1 && c.z < W + 2));
+      if (flat && vy > -9 && c.pitch > -0.35 && c.pitch < 0.5 && Math.abs(c.roll) < 0.45) {
+        c.air = false; c.y = g; c.pitch = 0; c.roll = 0; sfx('crash', 0.3, c.x, c.z); shake = Math.max(shake, 0.15); msg('Gelandet', 1.5);
+      } else crashPlane(c);
+    }
+  }
   function damageCar(c, amt, byPlayer) {
     if (c.wreck) return;
     c.hp -= amt;
+    if (mission && mission.fragile != null && c === player.inCar) mission.fragile += amt;
     if (c.hp <= 0 && !c.onFire) { c.onFire = true; c.burnT = 4; c.hp = 0; }
     if (byPlayer && c.type === 'police' && amt > 3) crime('copcar', null);
   }
   function explodeCar(c) {
     c.onFire = false; c.wreck = true; c.deadT = 0;
-    c.paint = [0.12, 0.12, 0.12]; c.paint2 = [0.15, 0.15, 0.15]; c.siren = false;
+    c.paint = [0.12, 0.12, 0.12]; c.paint2 = [0.15, 0.15, 0.15]; c.siren = false; c.glow = null;
     explosion(c.x, c.y + 0.8, c.z, c.driver === player ? 'player' : null);
     if (c.driver && c.driver !== player) { const d = c.driver; c.driver = null; d.inCar = null; d.x = c.x + 1.5; d.z = c.z; d.hp = 0; d.state = 'dead'; d.fall = 1; addPed(d); }
   }
@@ -911,12 +1711,21 @@ function buildGame(canvas, radar, root, ui) {
       skin: rgb(pick(SKINS)), shirt: rgb(pick(SHIRTS)), pants: rgb(pick(PANTS)), hair: rgb(pick(HAIRS)), speed: rand(1.2, 1.7),
       bi: 0, bj: 0, k: 0, dir: Math.random() < 0.5 ? 1 : -1, tx: x, tz: z, fx: 0, fz: 0, shootT: rand(0.6, 1.4), armed: false,
       deadT: 0, spin: 0, spinV: 0, fall: 0, inCar: null, car: null, aim: false, punchT: 0, cash: randi(5, 60), arrestT: 0, name: null, hostile: false,
-      hairStyle: Math.random() < 0.55 ? 0 : Math.random() < 0.8 ? 1 : 2, sleeve: Math.random() < 0.3, h: rand(0.94, 1.05), bw: rand(0.93, 1.1) };
+      hairStyle: Math.random() < 0.55 ? 0 : Math.random() < 0.8 ? 1 : 2, sleeve: Math.random() < 0.3, h: rand(0.94, 1.05), bw: rand(0.93, 1.1),
+      act: null, run: false, bag: null, spot: null };
     if (kind === 'cop') { p.shirt = rgb('#1f3a68'); p.sleeve = true; p.hairStyle = 0; p.pants = rgb('#1b2433'); p.hair = rgb('#111111'); p.armed = true; p.cash = randi(20, 80); }
     return p;
   }
   function addPed(p) { if (peds.indexOf(p) < 0) peds.push(p); return p; }
-  function spawnWalker(kind) { const s = randomSidewalk(); const p = makePed(kind || 'civ', s.x, s.z); p.bi = s.i; p.bj = s.j; p.k = s.k; return addPed(p); }
+  function spawnWalker(kind) {
+    const s = randomSidewalk(); const p = makePed(kind || 'civ', s.x, s.z); p.bi = s.i; p.bj = s.j; p.k = s.k;
+    if (p.kind === 'civ') {
+      const r = Math.random();
+      if (r < 0.12) { p.run = true; p.speed = rand(3.0, 3.6); p.shirt = rgb(pick(['#ff2bd6', '#22e6ff', '#39ff88', '#ffe14d'])); p.pants = rgb('#1b1d22'); p.sleeve = false; }
+      else if (r < 0.4) p.bag = rgb(pick(['#c9a46c', '#d8d4cc', '#2b2b2b', '#b03a5a', '#3a6fb0']));
+    }
+    return addPed(p);
+  }
   function rehome(p) {
     p.bi = clamp(Math.floor((p.x - ROAD / 2) / P), 0, N - 1); p.bj = clamp(Math.floor((p.z - ROAD / 2) / P), 0, N - 1);
     let best = 0, bd = 1e9;
@@ -936,6 +1745,7 @@ function buildGame(canvas, radar, root, ui) {
   function panic(p, x, z) {
     if (p.state === 'dead' || p.state === 'ragdoll' || p.kind === 'giver') return;
     if (p.kind === 'cop' || p.hostile) return;
+    p.act = null;
     p.state = 'flee'; p.fx = x; p.fz = z; p.stateT = rand(6, 11);
   }
   function panicAround(x, z, r) { for (const p of peds) if (Math.hypot(p.x - x, p.z - z) < r) panic(p, x, z); }
@@ -987,7 +1797,7 @@ function buildGame(canvas, radar, root, ui) {
       if (moveTo(p, c[0], c[1], p.speed, dt) < 0.6) {
         const r = Math.random();
         if (r < 0.2 && crossFrom(p)) return;
-        if (r < 0.3) { p.state = 'idle'; p.stateT = rand(1.5, 5); }
+        if (r < 0.3 && !p.run) { p.state = 'idle'; p.stateT = rand(1.5, 5); p.act = Math.random() < 0.45 ? 'phone' : null; }
         if (r > 0.93) p.dir = -p.dir;
         p.k = (p.k + p.dir + 4) % 4;
       }
@@ -996,7 +1806,7 @@ function buildGame(canvas, radar, root, ui) {
     } else if (st === 'idle' || st === 'talk') {
       p.moving = Math.max(0, p.moving - dt * 4);
       if (st === 'talk') p.yaw += angDiff(p.yaw, Math.atan2(player.x - p.x, player.z - p.z)) * Math.min(1, 6 * dt);
-      if (st === 'idle' && p.stateT <= 0) p.state = 'walk';
+      if (st === 'idle' && p.stateT <= 0) { p.state = 'walk'; p.act = null; }
     } else if (st === 'stand') {
       p.moving = 0;
       const d = Math.hypot(player.x - p.x, player.z - p.z);
@@ -1139,7 +1949,7 @@ function buildGame(canvas, radar, root, ui) {
         if (c.mode === 'chase') aiChase(c, dt); else aiTraffic(c, dt);
         inp = c.inp;
       } else if (c.mode === 'police-parked') { c.siren = wanted > 0; }
-      stepCar(c, dt, inp);
+      if (c.type === 'plane' && c.driver === player) stepPlane(c, dt, inp); else stepCar(c, dt, inp);
     }
   }
   function carCollisions() {
@@ -1147,6 +1957,7 @@ function buildGame(canvas, radar, root, ui) {
       const a = cars[i];
       for (let j = i + 1; j < cars.length; j++) {
         const b = cars[j];
+        if (a.air || b.air) continue;
         const dx0 = b.x - a.x, dz0 = b.z - a.z;
         if (Math.abs(dx0) > 6 || Math.abs(dz0) > 6) continue;
         const ra = a.T.Wd / 2, rb = b.T.Wd / 2, oa = a.T.L / 2 - ra, ob = b.T.L / 2 - rb;
@@ -1171,6 +1982,7 @@ function buildGame(canvas, radar, root, ui) {
           }
         }
       }
+      if (a.air) continue;
       // Fahrzeug gegen Fußgänger
       const fx = Math.sin(a.yaw), fz = Math.cos(a.yaw), spd = Math.hypot(a.vx, a.vz);
       const hitTest = (p, isPlayer) => {
@@ -1241,12 +2053,19 @@ function buildGame(canvas, radar, root, ui) {
       ? [[-0.16, 0.05, 0.048, P1], [-0.25, 0.047, 0.046, P1], [-0.29, 0.035, 0.034, P1], [-0.31, 0, 0, P1]]
       : [[-0.13, 0.054, 0.051, P1], [-0.131, 0.043, 0.042, P2], [-0.21, 0.042, 0.041, P2], [-0.27, 0.037, 0.036, P2], [-0.3, 0.025, 0.025, P2], [-0.31, 0, 0, P2]])));
     // Unterarm mit Hand: Haut (P1), Ärmel (P2)
-    const foreArm = (sleeve) => mk((g) => {
+    const foreArm = (sleeve, fist) => mk((g) => {
       const S = sleeve ? P2 : P1, d = sleeve ? 0.008 : 0;
       L(g, [[0.03, 0, 0, S], [0.015, 0.033 + d, 0.032 + d, S], [0, 0.038 + d, 0.036 + d, S], [-0.08, 0.041 + d, 0.037 + d, S], [-0.18, 0.032 + d, 0.029 + d, S],
         [-0.225, 0.03 + d, 0.028 + d, sleeve ? P2 : P1], [-0.226, 0.026, 0.024, P1], [-0.24, 0.026, 0.024, P1], [-0.25, 0, 0, P1]]);
-      E(g, 0, -0.3, 0.006, 0.022, 0.062, 0.04, P1);
-      E(g, 0.012, -0.262, 0.035, 0.012, 0.03, 0.012, P1);
+      if (fist) {
+        // geballte Faust: Knöchelreihe vorn, Daumen quer davor
+        E(g, 0, -0.29, 0.004, 0.036, 0.048, 0.042, P1);
+        E(g, 0, -0.318, 0.022, 0.034, 0.022, 0.026, P1);
+        E(g, 0.022, -0.282, 0.03, 0.014, 0.026, 0.014, P1);
+      } else {
+        E(g, 0, -0.3, 0.006, 0.022, 0.062, 0.04, P1);
+        E(g, 0.012, -0.262, 0.035, 0.012, 0.03, 0.012, P1);
+      }
     });
     return {
       torso: mk((g) => L(g, [[0.8, 0, 0, P2], [0.83, 0.1, 0.07, P2], [0.88, 0.155, 0.105, P2, -0.005], [0.96, 0.172, 0.115, P2, -0.01],
@@ -1286,7 +2105,7 @@ function buildGame(canvas, radar, root, ui) {
         E(g, 0, -0.455, 0.035, 0.053, 0.018, 0.126, SOLE);
       }),
       armShort: upperArm(false), armLong: upperArm(true),
-      fore: foreArm(false), foreSleeve: foreArm(true),
+      fore: foreArm(false), foreSleeve: foreArm(true), fist: foreArm(false, true), fistSleeve: foreArm(true, true),
     };
   }
   const bodyHi = buildBody(16), bodyLo = buildBody(7);
@@ -1298,38 +2117,82 @@ function buildGame(canvas, radar, root, ui) {
     if (p.state === 'dead') { tr(MA, 0, 0.14, 0); rx(MA, Math.PI / 2 * p.fall); }
     else if (p.state === 'ragdoll') { tr(MA, 0, 0.9, 0); rx(MA, p.spin); tr(MA, 0, -0.9, 0); }
     sc(MA, h * (p.bw || 1), h, h);
-    drawMesh(B.torso, MA, p.shirt, p.pants, 1);
-    // Beine: Hüfte schwingt, das Knie beugt sich beim Vorschwingen
+    // Tätigkeit im Stand (sitzen, telefonieren, plaudern …) und Joggen
+    const act = (p.state === 'idle' || p.state === 'talk') ? p.act : null, run = !!p.run && m > 0.5 && (p.state === 'walk' || p.state === 'cross');
+    if (act === 'sit') tr(MA, 0, -0.45, 0);
+    // Faustschlag: Phase u (0..1), Streckung e schnell raus und langsamer zurück; der Oberkörper dreht in den Schlag
+    const kind = p.punchT > 0 ? (p.punchKind || 0) : -1, u = kind >= 0 ? clamp(1 - p.punchT / (p.punchDur || 0.25), 0, 1) : 0;
+    const ext = (v) => v < 0.35 ? Math.sin(v / 0.35 * Math.PI / 2) : 1 - (v - 0.35) / 0.65;
+    const guard = kind >= 0 || p.guardT > 0;
+    let twist = 0, dip = 0, e = 0, wind = 0;
+    if (kind === 0 || kind === 1) { e = ext(u); twist = (kind === 0 ? 0.32 : -0.32) * e; }
+    else if (kind === 2) {
+      if (u < 0.28) wind = Math.sin(u / 0.28 * Math.PI / 2); else { wind = 1 - clamp((u - 0.28) / 0.2, 0, 1); e = ext((u - 0.28) / 0.72); }
+      twist = 0.2 * wind + 0.38 * e; dip = 0.07 * wind - 0.03 * e;
+    }
+    if (dip) tr(MA, 0, -dip, 0);
+    mCopy(MU, MA); ry(MU, twist);
+    if (kind === 2) { tr(MU, 0, 1.0, 0); rx(MU, 0.12 * wind - 0.1 * e); tr(MU, 0, -1.0, 0); }
+    if (run) { tr(MU, 0, 0.9, 0); rx(MU, 0.14); tr(MU, 0, -0.9, 0); }
+    drawMesh(B.torso, MU, p.shirt, p.pants, 1);
+    // Beine: Hüfte schwingt, das Knie beugt sich beim Vorschwingen (Joggen: weiter ausgreifend)
     for (const s of [-1, 1]) {
-      const knee = m * (0.08 + 0.95 * Math.max(0, -s * Math.cos(wt)));
-      mCopy(MB, MA); tr(MB, s * 0.095, 0.92, 0); rx(MB, Math.sin(wt) * 0.5 * m * s); drawMesh(B.thigh, MB, p.pants);
+      let hip = Math.sin(wt) * (run ? 0.8 : 0.5) * m * s, knee = m * (0.08 + (run ? 1.5 : 0.95) * Math.max(0, -s * Math.cos(wt)));
+      if (act === 'sit') { hip = -1.5; knee = 1.45; }
+      mCopy(MB, MA); tr(MB, s * 0.095, 0.92, 0); rx(MB, hip); drawMesh(B.thigh, MB, p.pants);
       tr(MB, 0, -0.44, 0); rx(MB, knee); drawMesh(B.shin, MB, p.pants);
     }
     // Arme: Schulter, Ellbogen, Hand
     for (const s of [-1, 1]) {
       const isRight = s < 0;
       let a = -Math.sin(wt) * 0.52 * m * s, elbow = -(0.15 + Math.max(0, -a) * 0.8), spread = s * 0.07;
-      if (isRight && (p.aim || p.punchT > 0)) { a = -Math.PI / 2 + (p.aimPitch || 0); elbow = 0; spread = 0; }
+      if (run) { a = -Math.sin(wt) * 0.9 * m * s; elbow = -1.5; }
+      if (act && !guard) {
+        const ph = p.walkT * 3 + s * 1.7;
+        if (act === 'sit') { a = -0.45; elbow = -0.9; spread = s * 0.04; }
+        else if (act === 'phone' && isRight) { a = -0.25; elbow = -2.5; spread = -s * 0.3; }
+        else if (act === 'chat') { a = -0.35 - 0.22 * (Math.sin(nowT * 2.3 + ph) + 1); elbow = -1.0 - 0.35 * Math.sin(nowT * 3.1 + ph * 2); spread = s * 0.05; }
+        else if (act === 'vendor') { a = -0.6; elbow = -0.85; spread = -s * 0.08; }
+        else if (act === 'wait' || act === 'phone') { a = 0.06; elbow = -0.25; spread = s * 0.13; }
+      }
+      if (guard && !p.aim) {
+        // Deckung: Fäuste vor dem Kinn
+        a = -0.75 - Math.sin(wt) * 0.08 * m * s; elbow = -2.1; spread = -s * 0.17;
+        const punching = (kind === 0 && isRight) || (kind === 1 && !isRight) || (kind === 2 && isRight);
+        if (punching && kind < 2) { a = lerp(-0.75, -1.52, e); elbow = lerp(-2.1, -0.06, e); spread = lerp(-s * 0.17, -s * 0.08, e); }
+        else if (punching) {
+          // Uppercut: erst tief ausholen, dann Faust von unten nach oben vor das Gesicht
+          a = lerp(lerp(-0.75, -0.2, wind), -1.45, e); elbow = lerp(lerp(-2.1, -1.65, wind), -1.4, e); spread = lerp(-s * 0.2, -s * 0.32, e);
+        } else if (kind >= 0) { a -= 0.08 * e; elbow -= 0.15 * e; } // die andere Hand schützt das Gesicht
+      }
+      if (isRight && p.aim) { a = -Math.PI / 2 + (p.aimPitch || 0); elbow = 0; spread = 0; }
       if (!isRight && p.aim && p.twoHand) { a = -Math.PI / 2 + (p.aimPitch || 0) + 0.15; elbow = -0.25; spread = -s * 0.45; }
-      mCopy(MB, MA); tr(MB, s * 0.2, 1.45, 0); rz(MB, spread); rx(MB, a);
+      mCopy(MB, MU); tr(MB, s * 0.2, 1.45, 0); rz(MB, spread); rx(MB, a);
       drawMesh(p.sleeve ? B.armLong : B.armShort, MB, p.shirt, p.skin);
       tr(MB, 0, -0.29, 0); rx(MB, elbow);
-      drawMesh(p.sleeve ? B.foreSleeve : B.fore, MB, p.skin, p.shirt);
+      const fist = guard && !p.aim;
+      drawMesh(fist ? (p.sleeve ? B.fistSleeve : B.fist) : (p.sleeve ? B.foreSleeve : B.fore), MB, p.skin, p.shirt);
+      if (!isRight && p.bag && !fist && act !== 'sit' && B === bodyHi) { mCopy(MC, MB); tr(MC, 0, -0.45, 0.02); sc(MC, 0.13, 0.3, 0.27); part(MC, p.bag); }
+      if (isRight && act === 'phone' && B === bodyHi) { mCopy(MC, MB); tr(MC, 0, -0.31, 0.04); sc(MC, 0.03, 0.14, 0.075); part(MC, [0.45, 0.85, 1], true); }
       if (isRight && p.aim && p.gunLen) {
         mCopy(MC, MB); tr(MC, 0, -0.27 - p.gunLen / 2, 0.05); sc(MC, 0.06, p.gunLen, 0.1); part(MC, GUN);
         mCopy(MC, MB); tr(MC, 0, -0.3, -0.01); sc(MC, 0.045, 0.05, 0.1); part(MC, GUN);
       }
     }
-    drawMesh(B.head, MA, p.skin);
-    if (p.kind === 'cop') { drawMesh(B.hairShort, MA, p.hair); drawMesh(B.hat, MA); }
-    else if (p.hairStyle === 1) drawMesh(B.hairLong, MA, p.hair);
-    else if (p.hairStyle !== 2) drawMesh(B.hairShort, MA, p.hair);
+    // Kopf dreht nur halb mit, damit der Blick zum Gegner bleibt
+    mCopy(MB, MA); ry(MB, twist * 0.4); if (kind === 2) { tr(MB, 0, 1.0, 0); rx(MB, 0.12 * wind - 0.1 * e); tr(MB, 0, -1.0, 0); }
+    drawMesh(B.head, MB, p.skin);
+    if (p.kind === 'cop') { drawMesh(B.hairShort, MB, p.hair); drawMesh(B.hat, MB); }
+    else if (p.hairStyle === 1) drawMesh(B.hairLong, MB, p.hair);
+    else if (p.hairStyle !== 2) drawMesh(B.hairShort, MB, p.hair);
   }
   function drawCar(c) {
     mIdent(MA); tr(MA, c.x, c.y, c.z); ry(MA, c.yaw);
-    drawMesh(c.mesh, MA, c.paint, c.paint2, 1);
+    if (c.type === 'plane') { rx(MA, -(c.pitch || 0)); rz(MA, c.roll || 0); }
+    const far = Math.hypot(c.x - camState.eye[0], c.z - camState.eye[2]) > 35;
+    drawMesh(far ? carMeshesLo[c.type] : c.mesh, MA, c.paint, c.paint2, 1);
     if (c.siren && c.type === 'police' && Math.floor(nowT * 6) % 2 === 0) {
-      mCopy(MB, MA); tr(MB, (Math.floor(nowT * 3) % 2 ? 0.32 : -0.32), c.T.H + 0.1, 0); sc(MB, 0.7, 0.28, 0.4);
+      mCopy(MB, MA); tr(MB, (Math.floor(nowT * 3) % 2 ? 0.33 : -0.33), c.T.H + 0.08, 0); sc(MB, 0.62, 0.17, 0.3);
       part(MB, Math.floor(nowT * 3) % 2 ? [0.3, 0.45, 1] : [1, 0.2, 0.2], true);
     }
   }
@@ -1371,7 +2234,7 @@ function buildGame(canvas, radar, root, ui) {
   const WORDER = ['fist', 'pistol', 'uzi', 'shotgun', 'rifle'];
   const WLABEL = { pistol: 'Pistole', uzi: 'Uzi', shotgun: 'Schrotflinte', rifle: 'Sturmgewehr' };
   const player = makePed('player', 0, 0);
-  Object.assign(player, { hp: 100, armor: 0, money: 500, weapons: { fist: Infinity }, clip: {}, reloadT: 0, cur: 'fist', inCar: null, dead: false, grounded: true,
+  Object.assign(player, { hp: 100, nitro: 1, boostT: 0, boostOn: false, armor: 0, money: 500, weapons: { fist: Infinity }, clip: {}, reloadT: 0, cur: 'fist', inCar: null, dead: false, grounded: true,
     shootT: 0, aimHold: 0, arrestT: 0, state: 'walk', skin: rgb('#c68a5e'), shirt: rgb('#f2f2f2'), pants: rgb('#2b4a7a'), hair: rgb('#1a1a1a'), hairStyle: 0, sleeve: false, h: 1, bw: 1 });
   const keys = {};
   const mouse = { l: false, r: false, clicked: false };
@@ -1398,17 +2261,36 @@ function buildGame(canvas, radar, root, ui) {
     player.shootT = w.rate;
     if (player.cur === 'fist') punch(); else fireGun(w);
   }
+  // Faustkombo: 0 = Jab rechts, 1 = Cross links, 2 = Uppercut rechts. Wer im Zeitfenster nachklickt, schlägt den nächsten Schlag.
+  const COMBO = [
+    { dur: 0.26, hit: 0.09, next: 0.28, dmg: 12, knock: 0 },
+    { dur: 0.26, hit: 0.09, next: 0.28, dmg: 15, knock: 0 },
+    { dur: 0.42, hit: 0.16, next: 0.62, dmg: 30, knock: 3.5 }
+  ];
   function punch() {
-    player.punchT = 0.25; player.yaw = camState.yaw;
-    const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
-    let best = null, bd = 2.1;
+    const P = player;
+    P.combo = P.comboT > 0 && P.combo < 2 ? P.combo + 1 : 0;
+    const k = COMBO[P.combo];
+    P.punchKind = P.combo; P.punchDur = k.dur; P.punchT = k.dur; P.punchHit = k.hit;
+    P.shootT = k.next; P.comboT = k.dur + 0.45; P.guardT = 1.6;
+    P.yaw = camState.yaw;
+    sfx('swing', P.combo === 2 ? 0.6 : 0.4);
+  }
+  // Treffer erst, wenn der Arm ausgestreckt ist
+  function punchImpact() {
+    const P = player, k = COMBO[P.punchKind || 0];
+    const fx = Math.sin(P.yaw), fz = Math.cos(P.yaw);
+    let best = null, bd = 2.4;
     for (const p of peds) {
       if (p.state === 'dead' || p.kind === 'giver') continue;
-      const dx = p.x - player.x, dz = p.z - player.z, d = Math.hypot(dx, dz);
+      const dx = p.x - P.x, dz = p.z - P.z, d = Math.hypot(dx, dz);
       if (d < bd && (dx * fx + dz * fz) / (d || 1) > 0.35) { bd = d; best = p; }
     }
-    sfx(best ? 'punch' : 'swing', 0.6);
-    if (best) damagePed(best, WEAPONS.fist.dmg, fx, fz, 'player', Math.random() < 0.3 ? 3 : 0);
+    if (!best) return;
+    sfx('punch', P.punchKind === 2 ? 0.9 : 0.6);
+    rumble(P.punchKind === 2 ? 0.7 : 0.3, 0.4, P.punchKind === 2 ? 140 : 60);
+    if (P.punchKind === 2) shake = Math.max(shake, 0.12);
+    damagePed(best, k.dmg, fx, fz, 'player', k.knock || (Math.random() < 0.1 ? 2.5 : 0));
   }
   function raycastAll(ox, oy, oz, dx, dy, dz, maxT, minT) {
     const res = { t: rayWorld(ox, oy, oz, dx, dy, dz, maxT), ped: null, car: null };
@@ -1629,6 +2511,35 @@ function buildGame(canvas, radar, root, ui) {
     respawnAt = null;
   }
 
+  // ================= Eigener Wagen =================
+  // ownSpec merkt sich Typ, Lack und Unterbodenlicht, damit der Wagen nach einem Totalschaden neu geliefert werden kann
+  let ownCar = null, ownSpec = null, callT = 0;
+  function makeOwn(c) {
+    if (ownCar && ownCar !== c) ownCar.owned = false;
+    ownCar = c; c.owned = true; c.playerOwned = true;
+    ownSpec = { type: c.type, paint: c.paint.slice(), glow: c.glow ? c.glow.slice() : null };
+  }
+  function ownCarAlive() { return !!ownCar && cars.indexOf(ownCar) >= 0 && !ownCar.wreck && !ownCar.onFire; }
+  // Wagen rufen (L / Steuerkreuz ↓): steht er weit weg oder ist Schrott, wird er an eine Straße in der Nähe gebracht
+  function callCar() {
+    if (player.dead || !ownSpec) return;
+    if (ownCar && player.inCar === ownCar) { msg('Du sitzt schon in deinem Wagen.', 1.5); return; }
+    if (callT > 0) { msg('Dein Wagen ist schon unterwegs.', 1.2); return; }
+    const alive = ownCarAlive();
+    if (alive && Math.hypot(ownCar.x - player.x, ownCar.z - player.z) < 40) { msg('Dein Wagen steht ganz in der Nähe – siehe Karte.', 2); return; }
+    const sp = roadSpawnPoint(12, 45) || roadSpawnPoint(12, 100);
+    if (!sp) { msg('Gerade kein Platz für deinen Wagen. Versuch es gleich nochmal.', 1.8); return; }
+    let c = alive && (!ownCar.driver || ownCar.driver === player) ? ownCar : null;
+    if (c) {
+      Object.assign(c, { x: sp.x, z: sp.z, y: groundY(sp.x, sp.z), yaw: sp.yaw, vx: 0, vz: 0, speed: 0, steer: 0, mode: 'parked', ai: null, siren: false });
+    } else {
+      c = spawnCar(ownSpec.type, sp.x, sp.z, sp.yaw, 'parked');
+      c.paint = ownSpec.paint.slice(); c.glow = ownSpec.glow ? ownSpec.glow.slice() : null; c.looted = true;
+      makeOwn(c);
+    }
+    callT = 3; sfx('door', 0.4); msg('Dein Wagen steht bereit – siehe Karte.', 2.5);
+  }
+
   // ================= Interaktion =================
   function nearShop() {
     for (const s of shops) if (!s.drive && s.kind !== 'export' && Math.hypot(player.x - s.x, player.z - s.z) < s.r + 0.5) return s;
@@ -1669,10 +2580,12 @@ function buildGame(canvas, radar, root, ui) {
       if (!c.looted) { c.looted = true; lootWeapon('shotgun', randi(8, 16)); }
     }
     vehicleT = 3; ui({ vehicle: c.T.name.toUpperCase(), vehicleOn: true });
+    if (c.type === 'plane') msg('Neon Jet: W gibt Schub, ab 110 km/h mit ↓ die Nase hochziehen. Landen nur sanft auf flachem Boden.', 6);
     sfx('door', 0.5);
   }
   function exitCar() {
     const c = player.inCar; if (!c) return;
+    if (c.air) { msg('Nicht in der Luft aussteigen – erst landen!', 1.6); return; }
     if (Math.abs(c.speed) > 9) { msg('Zu schnell zum Aussteigen!', 1.2); return; }
     leaveCarForce();
     if (insideBuilding(player.x, 1, player.z, 0.3)) { player.x = c.x - Math.cos(c.yaw) * (c.T.Wd / 2 + 0.7); player.z = c.z + Math.sin(c.yaw) * (c.T.Wd / 2 + 0.7); }
@@ -1694,7 +2607,7 @@ function buildGame(canvas, radar, root, ui) {
       return;
     }
     const s = nearShop(); if (s) { openShop(s); return; }
-    if (tony && Math.hypot(tony.x - player.x, tony.z - player.z) < 2.6) { talkTony(); return; }
+    for (const g of givers) if (Math.hypot(g.ped.x - player.x, g.ped.z - player.z) < 2.6) { g.talk(); return; }
     const p = nearPed(); if (p) talkTo(p);
   }
   let menuSel = 0;
@@ -1716,7 +2629,7 @@ function buildGame(canvas, radar, root, ui) {
   }
   function closeMenu() {
     menu = null; paused = false;
-    if (talkPed && talkPed.state === 'talk') talkPed.state = 'walk';
+    if (talkPed && talkPed.state === 'talk') talkPed.state = talkPed.spot ? 'idle' : 'walk';
     talkPed = null;
     ui({ shop: null, dialog: null });
     try { root.focus(); } catch (e) { /* egal */ }
@@ -1787,52 +2700,184 @@ function buildGame(canvas, radar, root, ui) {
   }
 
   // ================= Aufträge =================
-  let tony = null, mission = null, missionIdx = 0, missionLevel = 1;
-  const MISSIONS = [
-    { id: 'export', title: 'Exportgeschäft', text: 'Ein Kunde aus Übersee will einen Sportwagen. Am Palmenhain parkt ein roter Flitzer. Klau ihn und bring ihn heil in die Export-Garage hier am Hafen.', reward: 1500 },
-    { id: 'courier', title: 'Heiße Ware', text: 'Hol ein Paket am Späti ab und bring es zum Villenhügel. Du hast 90 Sekunden. Keine Fragen, keine Umwege.', reward: 900 },
-    { id: 'hit', title: 'Alte Rechnung', text: 'Vito schuldet mir viel Geld. Er hängt mit zwei Leibwächtern in der Altstadt rum. Erledige das. Ohne Knarre brauchst du gar nicht erst hinfahren.', reward: 2000 }
-  ];
-  function talkTony() {
-    if (mission) { openDialog('Tony', 'Was stehst du hier noch rum? Du hast einen Job zu erledigen.', [{ label: 'Bin schon weg' }, { label: 'Auftrag abbrechen', act: () => { closeMenu(); failMission('Auftrag abgebrochen.'); } }]); return; }
-    const m = MISSIONS[missionIdx % MISSIONS.length], reward = Math.round(m.reward * missionLevel);
-    openDialog('Tony – ' + m.title, m.text + '  Bezahlung: ' + fmt(reward) + '.', [{ label: 'Auftrag annehmen', act: () => { closeMenu(); startMission(m, reward); } }, { label: 'Später' }]);
+  // Jeder Auftrag ist eine Kette von Schritten. Schritt-Typen:
+  //   goto    – Ort erreichen (optional im Auftragswagen, angehalten, ohne Fahndung)
+  //   kill    – Gruppe erledigen (oder nur das Ziel `boss`)
+  //   defend  – eine Zeit lang durchhalten, während Angreifer in Wellen kommen
+  //   steal   – in den Auftragswagen steigen
+  //   destroy – den Fluchtwagen zerstören, bevor die Zeit abläuft
+  //   lose    – Fahndung loswerden
+  // Optional: time (Zeitlimit, sonst gescheitert), keep (Zeit läuft vom vorigen Schritt weiter), start/done/check/near.
+  let tony = null, nova = null, mission = null, missionLevel = 1, gangIdx = 0, specialIdx = 0;
+  const givers = [];
+  const pt = (x, z) => ({ x: x, z: z });
+  const walkSide = (i, j, side) => { const b = blockRect(i, j); return side === 'S' ? pt(b.cx, b.z0 + 1.6) : side === 'N' ? pt(b.cx, b.z1 - 1.6) : side === 'E' ? pt(b.x0 + 1.6, b.cz) : pt(b.x1 - 1.6, b.cz); };
+  const tonyPt = () => pt(tony.x + 2.5, tony.z - 1.5);
+  const PLACES = {
+    airport: pt(498, 239), arena: pt(-74, 260), isle: pt(-155, -132), lake: pt(140, 545), marina: pt(-150, 80),
+    hills: pt(-118, 420), export: () => { const g = shopOf('export'); return pt(g.x, g.z); }
+  };
+  const go = (at, text, o) => Object.assign({ type: 'goto', at: at, text: text, r: 3.5 }, o || {});
+  // Gangmitglied der Chrome Vipers: grünes Shirt, bewaffnet, greift an, sobald man nah genug ist
+  function viper(x, z, o) {
+    const p = addPed(makePed('guard', x, z));
+    Object.assign(p, { hp: 100, state: 'stand', armed: true, shirt: rgb('#39ff88'), pants: rgb('#151515'), hair: rgb('#111111'), sleeve: false, hairStyle: 2, cash: randi(30, 90), bag: null, run: false, act: null }, o || {});
+    mission.peds.push(p); return p;
   }
-  function startMission(m, reward) {
-    mission = { def: m, reward: reward, stage: 0, timer: 0, car: null, peds: [], target: null };
-    if (m.id === 'export') {
-      const b = blockRect(6, 3);
-      const c = spawnCar('sport', roadC(6) + 5.6, b.cz, 0, 'parked');
-      c.paint = rgb('#d4201a'); mission.car = c;
-      setObjective('Klau den roten Sportwagen am Palmenhain.');
-    } else if (m.id === 'courier') {
-      const s = shopOf('spaeti'); mission.target = { x: s.x + 5, z: s.z };
-      setObjective('Hol das Paket am Späti ab.');
-    } else if (m.id === 'hit') {
-      const b = blockRect(2, 1), z = b.z0 + 1.6;
-      const v = addPed(makePed('target', b.cx, z));
-      Object.assign(v, { name: 'Vito', hp: 150, state: 'stand', armed: true, shirt: rgb('#7a1f2b'), pants: rgb('#1b1b1b'), hair: rgb('#2b1b10'), cash: 400 });
-      mission.peds.push(v); mission.vito = v;
-      for (const o of [-2.5, 2.5]) {
-        const g = addPed(makePed('guard', b.cx + o, z + 0.6));
-        Object.assign(g, { hp: 110, state: 'stand', armed: true, shirt: rgb('#151515'), pants: rgb('#151515'), cash: 80 });
-        mission.peds.push(g);
-      }
-      setObjective('Erledige Vito in der Altstadt.');
+  function freeSpot(x, z) {
+    if (insideBuilding(x, 1, z, 0.6)) return false;
+    const ti = Math.floor((x - TX0) / TG), tj = Math.floor((z - TZ0) / TG);
+    return ti >= 0 && tj >= 0 && ti < TNX && tj < TNZ && !terrBl[tj * TNX + ti];
+  }
+  function viperGroup(c, n, rad, o) {
+    const g = [];
+    for (let k = 0; k < n; k++) {
+      let x = c.x, z = c.z;
+      for (let t = 0; t < 14; t++) { const a = k / n * TAU + rand(-0.6, 0.6), r = rand(rad * 0.4, rad), qx = c.x + Math.sin(a) * r, qz = c.z + Math.cos(a) * r; if (freeSpot(qx, qz)) { x = qx; z = qz; break; } }
+      g.push(viper(x, z, o));
     }
-    msg(m.title, 3); sfx('mission', 0.5);
+    return g;
+  }
+  // Angreifer kommen aus 30–40 m Entfernung, nur auf begehbarem Boden außerhalb von Gebäuden
+  function attackWave(c, n) {
+    for (let k = 0; k < n; k++) {
+      for (let t = 0; t < 12; t++) {
+        const a = rand(0, TAU), r = rand(30, 40), x = c.x + Math.sin(a) * r, z = c.z + Math.cos(a) * r;
+        if (!freeSpot(x, z)) continue;
+        const p = viper(x, z, { state: 'attack', hostile: true }); mission.group.push(p);
+        break;
+      }
+    }
+  }
+  const WAGE = (r) => Math.round(r * missionLevel);
+  // ---- Kurierjobs (Nova) ----
+  const COURIER = [
+    { id: 'c-eil', title: 'Eilpost', text: 'Ein Umschlag wartet am Späti. Bring ihn in 90 Sekunden zum Villenhügel.', reward: 800, steps: [
+      go(() => { const s = shopOf('spaeti'); return pt(s.x + 5, s.z); }, 'Hol den Umschlag am Späti ab.', { msg: 'Umschlag aufgenommen' }),
+      go(() => walkSide(3, 6, 'S'), 'Bring den Umschlag zum Villenhügel!', { time: 90 })] },
+    { id: 'c-glas', title: 'Zerbrechlich', text: 'Ein Kunstsammler in der Arena wartet auf eine Glasskulptur aus der Klinik-Apotheke. Wenn dein Wagen zu viel abkriegt, ist sie hin. 120 Sekunden.', reward: 1100, steps: [
+      go(() => { const s = shopOf('hospital'); return pt(s.x + 4, s.z); }, 'Hol die Skulptur an der Klinik ab.', { msg: 'Skulptur eingeladen – vorsichtig fahren!', done: (m) => { m.fragile = 0; } }),
+      go(PLACES.arena, 'Bring die Skulptur heil zur Arena!', { time: 120, check: (m) => m.fragile > 22 ? 'Die Skulptur ist zerbrochen.' : null })] },
+    { id: 'c-drei', title: 'Drei Stopps', text: 'Drei Päckchen, drei Kunden, eine Uhr. Abholung am Hafen, dann Altstadt, Downtown und Palmenhain. 160 Sekunden für alles.', reward: 1400, steps: [
+      go(() => walkSide(4, 0, 'N'), 'Hol die Päckchen am Hafen ab.', { msg: 'Drei Päckchen aufgenommen' }),
+      go(() => walkSide(1, 3, 'S'), 'Stopp 1: Altstadt', { time: 160, msg: 'Päckchen 1 abgegeben' }),
+      go(() => walkSide(3, 3, 'E'), 'Stopp 2: Downtown', { keep: true, msg: 'Päckchen 2 abgegeben' }),
+      go(() => walkSide(6, 2, 'S'), 'Stopp 3: Palmenhain', { keep: true })] },
+    { id: 'c-luft', title: 'Luftfracht', text: 'Am Flughafen liegt Fracht für den Leuchtturmwärter auf der kleinen Insel. Du hast 150 Sekunden – nimm, was schnell ist.', reward: 1600, steps: [
+      go(PLACES.airport, 'Hol die Fracht am Flughafen-Terminal ab.', { r: 5, msg: 'Fracht aufgenommen' }),
+      go(PLACES.isle, 'Bring die Fracht zur Leuchtturm-Insel!', { time: 150, r: 6 })] },
+    { id: 'c-heiss', title: 'Heiße Ware', text: 'In der Hügelsiedlung liegt eine Tasche, nach der die Polizei sucht. Sobald du sie hast, bist du dran. Bring sie zum Jachthafen.', reward: 1800, steps: [
+      go(PLACES.hills, 'Hol die Tasche in der Hügelsiedlung.', { r: 5, msg: 'Die Polizei ist hinter dir her!', done: () => setWanted(Math.max(wanted, 2)) }),
+      go(PLACES.marina, 'Bring die Tasche zum Jachthafen!', { time: 140, r: 6 })] }
+  ];
+  // ---- Bandenkrieg gegen die Chrome Vipers (Tony, eine Kette) ----
+  const GANG = [
+    { id: 'g1', title: 'Revier markieren', text: 'Die Chrome Vipers dealen an meiner Ecke in der Altstadt. Vertreib sie, plündere ihr Versteck und bring mir die Ware.', reward: 1600, steps: [
+      go(() => walkSide(1, 4, 'E'), 'Fahr zur Ecke der Vipers in der Altstadt.', { r: 26 }),
+      { type: 'kill', text: 'Erledige die Dealer der Vipers.', start: (m) => { m.group = viperGroup(walkSide(1, 4, 'E'), 3, 7); } },
+      go(() => walkSide(1, 4, 'S'), 'Schnapp dir ihr Versteck.', { msg: 'Versteck geplündert' }),
+      go(tonyPt, 'Bring die Ware zu Tony am Hafen.')] },
+    { id: 'g2', title: 'Gegenschlag', text: 'Die Vipers greifen meine Export-Garage an! Halt sie auf. Und ihr Anführer soll nicht lebend davonkommen.', reward: 2200, steps: [
+      go(PLACES.export, 'Die Vipers greifen die Export-Garage an – fahr hin!', { r: 20 }),
+      { type: 'defend', text: 'Halte die Garage!', time: 45, start: (m) => { m.group = []; m.waveT = 0; } },
+      { type: 'destroy', text: 'Ihr Anführer flieht im grünen Wagen – mach ihn kaputt!', time: 90, start: (m) => {
+        const sp = roadSpawnPoint(25, 70) || { x: roadC(2), z: roadC(1), yaw: 0 };
+        const c = spawnCar('sport', sp.x, sp.z, sp.yaw, 'traffic'); c.paint = rgb('#1f8f4a'); c.glow = rgb('#39ff88');
+        const d = makePed('guard', sp.x, sp.z); Object.assign(d, { shirt: rgb('#39ff88'), inCar: c }); c.driver = d; c.flee = true; c.cruise = 16;
+        m.car = c; m.target = c;
+      } }] },
+    { id: 'g3', title: 'Waffenlieferung', text: 'Im Hafen liegt eine Waffenlieferung der Vipers, gut bewacht. Nimm ihnen den Lieferwagen ab und bring ihn zu mir. Rechne mit einem Hinterhalt.', reward: 2800, steps: [
+      go(() => walkSide(5, 0, 'N'), 'Fahr zur Waffenlieferung im Hafen.', { r: 28 }),
+      { type: 'kill', text: 'Schalte die Wachen aus.', start: (m) => {
+        const c = walkSide(5, 0, 'N'); m.group = viperGroup(c, 4, 9, { hp: 110 });
+        const v = spawnCar('van', c.x - 6, c.z + 5.5, Math.PI / 2, 'parked'); v.paint = rgb('#1f2a22'); v.glow = rgb('#39ff88'); m.car = v;
+      } },
+      { type: 'steal', text: 'Steig in den Lieferwagen der Vipers.' },
+      go(tonyPt, 'Bring den Lieferwagen zu Tony.', { r: 6, needCar: true, near: 90, onNear: (m) => { m.group = viperGroup(tonyPt(), 3, 22, { state: 'attack', hostile: true }); msg('Hinterhalt!', 2); } })] },
+    { id: 'g4', title: 'Kopf der Schlange', text: 'Rico führt die Vipers. Er versteckt sich mit seinen Leuten in der Hügelsiedlung. Wenn er fällt, ist der Krieg vorbei. Danach wird die Polizei Fragen stellen.', reward: 3500, steps: [
+      go(PLACES.hills, 'Fahr zu Ricos Versteck in der Hügelsiedlung.', { r: 32 }),
+      { type: 'kill', text: 'Erledige Rico!', start: (m) => {
+        m.group = viperGroup(PLACES.hills, 5, 12, { hp: 120 });
+        m.boss = viper(PLACES.hills.x - 2, PLACES.hills.z + 1, { name: 'Rico', hp: 260, shirt: rgb('#e8e8e2'), pants: rgb('#39ff88'), cash: 600 });
+        m.group.push(m.boss); m.target = m.boss;
+      } },
+      { type: 'lose', text: 'Die Polizei ist alarmiert – häng sie ab!', start: () => setWanted(Math.max(wanted, 3)) },
+      go(tonyPt, 'Melde dich bei Tony.')] }
+  ];
+  // ---- Spezialjobs (Tony, abwechselnd) ----
+  const SPECIAL_JOBS = [
+    { id: 'export', title: 'Exportgeschäft', text: 'Ein Kunde aus Übersee will einen Sportwagen. Am Palmenhain parkt ein roter Flitzer. Klau ihn und bring ihn heil in die Export-Garage hier am Hafen.', reward: 1500, steps: [
+      { type: 'steal', text: 'Klau den roten Sportwagen am Palmenhain.', start: (m) => {
+        const b = blockRect(6, 3), c = spawnCar('sport', roadC(6) + 5.6, b.cz, 0, 'parked'); c.paint = rgb('#d4201a'); m.car = c; m.target = c;
+      } },
+      go(PLACES.export, 'Bring den Wagen in die Export-Garage am Hafen.', { r: 4, needCar: true, stop: true, clean: true,
+        done: (m) => { m.reward = Math.round(m.reward * (0.5 + 0.5 * m.car.hp / 100)); leaveCarForce(); cars.splice(cars.indexOf(m.car), 1); m.car = null; } })] },
+    { id: 'hit', title: 'Alte Rechnung', text: 'Vito schuldet mir viel Geld. Er hängt mit zwei Leibwächtern in der Altstadt rum. Erledige das. Ohne Knarre brauchst du gar nicht erst hinfahren.', reward: 2000, steps: [
+      { type: 'kill', text: 'Erledige Vito in der Altstadt.', start: (m) => {
+        const b = blockRect(2, 1), z = b.z0 + 1.6;
+        m.boss = viper(b.cx, z, { kind: 'target', name: 'Vito', hp: 150, shirt: rgb('#7a1f2b'), pants: rgb('#1b1b1b'), hair: rgb('#2b1b10'), hairStyle: 0, cash: 400 });
+        m.group = [m.boss, viper(b.cx - 2.5, z + 0.6, { hp: 110, shirt: rgb('#151515') }), viper(b.cx + 2.5, z + 0.6, { hp: 110, shirt: rgb('#151515') })];
+        m.target = m.boss;
+      } }] }
+  ];
+  for (const d of COURIER) d.cat = 'courier';
+  for (const d of GANG) d.cat = 'gang';
+  for (const d of SPECIAL_JOBS) d.cat = 'special';
+
+  function busyDialog(name) {
+    openDialog(name, 'Du hast schon einen Job. Erledige den erst.', [{ label: 'Bin schon weg' }, { label: 'Auftrag abbrechen', act: () => { closeMenu(); failMission('Auftrag abgebrochen.'); } }]);
+  }
+  function talkTony() {
+    if (mission) { busyDialog('Tony'); return; }
+    const g = GANG[gangIdx % GANG.length], s = SPECIAL_JOBS[specialIdx % SPECIAL_JOBS.length], part = (gangIdx % GANG.length) + 1;
+    openDialog('Tony', gangIdx >= GANG.length && gangIdx % GANG.length === 0 ? 'Die Vipers haben sich neu formiert. Der Krieg geht weiter – und die Bezahlung wird besser.' : 'Die Chrome Vipers wollen mein Revier. Ich brauche jemanden, der sich nicht die Finger schmutzig zu machen scheut.', [
+      { label: 'Bandenkrieg ' + part + '/' + GANG.length + ': ' + g.title + ' (' + fmt(WAGE(g.reward)) + ')', act: () => offer('Tony', g) },
+      { label: 'Spezialjob: ' + s.title + ' (' + fmt(WAGE(s.reward)) + ')', act: () => offer('Tony', s) },
+      { label: 'Später' }]);
+  }
+  function talkNova() {
+    if (mission) { busyDialog('Nova'); return; }
+    openDialog('Nova – Kurierdienst', 'Pakete, Umschläge, Fragen stellt hier keiner. Such dir was aus.', COURIER.map((c) => ({ label: c.title + ' (' + fmt(WAGE(c.reward)) + ')', act: () => offer('Nova', c) })).concat([{ label: 'Später' }]));
+  }
+  function offer(name, d) {
+    openDialog(name + ' – ' + d.title, d.text + '  Bezahlung: ' + fmt(WAGE(d.reward)) + '.', [{ label: 'Annehmen', act: () => { closeMenu(); startMission(d, WAGE(d.reward)); } }, { label: 'Zurück', act: () => (name === 'Nova' ? talkNova() : talkTony()) }]);
+  }
+  function startMission(d, reward) {
+    mission = { def: d, reward: reward, si: -1, timer: 0, timed: false, car: null, peds: [], group: [], target: null, markTarget: false, boss: null };
+    msg(d.title, 3); sfx('mission', 0.5);
+    nextStep();
+  }
+  function nextStep() {
+    const m = mission, prev = m.def.steps[m.si];
+    if (prev && prev.done) prev.done(m);
+    if (prev && prev.msg) { msg(prev.msg, 2); sfx('cash', 0.4); }
+    if (!mission) return;
+    m.si++;
+    if (m.si >= m.def.steps.length) { passMission(); return; }
+    const s = m.def.steps[m.si];
+    m.nearFired = false;
+    if (s.time) { m.timer = s.time; m.timed = true; } else if (!s.keep) m.timed = false;
+    if (m.target && m.markTarget) m.home = pt(m.target.x, m.target.z);
+    m.target = null; m.markTarget = false;
+    if (s.type === 'goto') { const a = typeof s.at === 'function' ? s.at() : s.at; m.target = pt(a.x, a.z); m.markTarget = true; }
+    if (s.start) s.start(m);
+    if (s.type === 'steal' && m.car) m.target = m.car;
+    if (s.type === 'kill' && !m.target && m.group.length) m.target = m.group[0];
+    setObjective(s.text);
   }
   function setObjective(t) { objective = t; }
   function cleanupMission() {
     if (!mission) return;
-    for (const p of mission.peds) if (p.state !== 'dead') { p.kind = 'civ'; p.hostile = false; rehome(p); }
+    for (const p of mission.peds) if (p.state !== 'dead' && !p.inCar) { p.kind = 'civ'; p.hostile = false; p.armed = false; rehome(p); }
+    if (mission.car && mission.car.flee && mission.car.driver) mission.car.flee = false;
     mission = null; setObjective(''); ui({ timer: '' });
   }
   function passMission() {
-    const r = mission.reward;
+    const m = mission, r = m.reward;
     player.money += r; big('AUFTRAG ERFÜLLT!', '+' + fmt(r), '#f2c94c', 4); sfx('mission', 0.8);
+    if (m.def.cat === 'gang') { gangIdx++; if (gangIdx % GANG.length === 0) { missionLevel *= 1.5; msg('Die Chrome Vipers sind geschlagen – fürs Erste.', 5); } }
+    else if (m.def.cat === 'special') specialIdx++;
     cleanupMission();
-    missionIdx++; if (missionIdx % MISSIONS.length === 0) missionLevel *= 1.5;
   }
   function failMission(reason, silent) {
     if (!mission) return;
@@ -1841,32 +2886,36 @@ function buildGame(canvas, radar, root, ui) {
   }
   function updateMission(dt) {
     if (!mission) return;
-    const m = mission, id = m.def.id;
-    if (id === 'export') {
-      const c = m.car;
-      if (c.wreck || c.onFire) { failMission('Der Sportwagen ist Schrott.'); return; }
-      if (m.stage === 0 && player.inCar === c) { m.stage = 1; const g = shopOf('export'); m.target = { x: g.x, z: g.z }; setObjective('Bring den Wagen in die Export-Garage am Hafen.'); }
-      if (m.stage === 1 && player.inCar !== c && !player.dead) setObjective('Steig wieder in den Sportwagen.');
-      if (m.stage === 1 && player.inCar === c) {
-        setObjective(wanted > 0 ? 'Hänge erst die Polizei ab!' : 'Bring den Wagen in die Export-Garage am Hafen.');
-        if (Math.hypot(c.x - m.target.x, c.z - m.target.z) < 4 && Math.abs(c.speed) < 3 && wanted === 0) {
-          m.reward = Math.round(m.reward * (0.5 + 0.5 * c.hp / 100));
-          leaveCarForce(); cars.splice(cars.indexOf(c), 1); passMission();
-        }
-      }
-    } else if (id === 'courier') {
-      const px = player.inCar ? player.inCar.x : player.x, pz = player.inCar ? player.inCar.z : player.z;
-      if (m.stage === 0 && Math.hypot(px - m.target.x, pz - m.target.z) < 3) {
-        m.stage = 1; m.timer = 90; const b = blockRect(3, 6); m.target = { x: b.cx, z: b.z0 + 1.6 };
-        setObjective('Bring das Paket zum Villenhügel!'); sfx('cash', 0.5);
-      } else if (m.stage === 1) {
-        m.timer -= dt;
-        if (m.timer <= 0) { failMission('Zu spät! Das Paket ist wertlos.'); return; }
-        if (Math.hypot(px - m.target.x, pz - m.target.z) < 3.5) passMission();
-      }
-    } else if (id === 'hit') {
-      if (m.vito.state === 'dead') { passMission(); return; }
-      if (m.peds.some((p) => p.hostile || p.state === 'attack')) for (const p of m.peds) if (p.state === 'stand') { p.state = 'attack'; p.hostile = true; }
+    const m = mission, s = m.def.steps[m.si];
+    if (!s) return;
+    const c = player.inCar, px = c ? c.x : player.x, pz = c ? c.z : player.z;
+    if (m.timed) { m.timer -= dt; if (m.timer <= 0 && s.type !== 'defend') { failMission(s.type === 'destroy' ? 'Er ist entkommen.' : 'Zu spät!'); return; } }
+    if (m.car && (m.car.wreck || m.car.onFire) && s.type !== 'destroy' && (s.type === 'steal' || s.needCar)) { failMission('Der Wagen ist Schrott.'); return; }
+    if (s.check) { const why = s.check(m); if (why) { failMission(why); return; } }
+    if (s.near && !m.nearFired && m.target && Math.hypot(px - m.target.x, pz - m.target.z) < s.near) { m.nearFired = true; s.onNear(m); }
+    // Gruppe: wird einer angegriffen, greifen alle an
+    if (m.group.some((p) => p.hostile || p.state === 'attack')) for (const p of m.group) if (p.state === 'stand') { p.state = 'attack'; p.hostile = true; }
+    if (s.type === 'goto') {
+      if (s.needCar && c !== m.car) { setObjective(m.car ? 'Steig wieder in den Wagen.' : s.text); return; }
+      if (s.stop && wanted > 0) { setObjective('Hänge erst die Polizei ab!'); return; }
+      setObjective(s.text);
+      if (Math.hypot(px - m.target.x, pz - m.target.z) < s.r && (!s.stop || !c || Math.abs(c.speed) < 3)) nextStep();
+    } else if (s.type === 'kill') {
+      const down = (p) => p.state === 'dead' || p.hp <= 0;
+      if (m.boss ? down(m.boss) : m.group.every(down)) { m.target = null; nextStep(); return; }
+      if (!m.boss) { const a = m.group.find((p) => !down(p)); if (a) m.target = a; }
+    } else if (s.type === 'defend') {
+      const home = m.home;
+      m.waveT -= dt;
+      if (m.waveT <= 0 && m.timer > 6) { m.waveT = 13; attackWave(home, 3); msg('Die nächste Welle kommt!', 1.8); }
+      m.target = home; m.markTarget = true;
+      if (m.timer <= 0) { for (const p of m.group) if (p.state !== 'dead') { p.state = 'flee'; p.fx = home.x; p.fz = home.z; p.stateT = 8; p.hostile = false; } nextStep(); }
+    } else if (s.type === 'steal') {
+      if (c === m.car) nextStep();
+    } else if (s.type === 'destroy') {
+      if (m.car.wreck || m.car.onFire) nextStep();
+    } else if (s.type === 'lose') {
+      if (wanted === 0) nextStep();
     }
   }
   function onPedKilled(p, src) {
@@ -1900,7 +2949,14 @@ function buildGame(canvas, radar, root, ui) {
       camState.dir[0] = dx / l; camState.dir[1] = dy / l; camState.dir[2] = dz / l; camState.dist = 0;
       return;
     }
-    if (c) {
+    if (c && c.type === 'plane') {
+      // Flugzeug: weiter hinten, folgt Kurs und Neigung
+      tx = c.x; ty = c.y + 3; tz = c.z; dist = 17 * mk;
+      if (nowT - camState.lastInput > 1.0 && (c.air || c.speed > 2)) {
+        camState.yaw += angDiff(camState.yaw, c.yaw) * Math.min(1, 3 * dt);
+        camState.pitch += (0.14 - (c.pitch || 0) * 0.55 - camState.pitch) * Math.min(1, 2.5 * dt);
+      }
+    } else if (c) {
       tx = c.x; ty = c.y + 1.7; tz = c.z; dist = lerp((6.5 + c.T.L * 0.55) * mk, 4.6, at * 0.7);
       if (nowT - camState.lastInput > 1.2 && Math.abs(c.speed) > 2 && at < 0.1) {
         const want = c.speed >= 0 ? c.yaw : c.yaw + Math.PI;
@@ -1966,28 +3022,31 @@ function buildGame(canvas, radar, root, ui) {
     gl.clearColor(light.fog[0], light.fog[1], light.fog[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     const e = camState.eye, d = camState.dir;
-    mPersp(PR, (player.inCar ? 64 - 10 * camState.aimT : 58 - 12 * camState.aimT) * Math.PI / 180, cw / chh, 0.15, 900);
+    mPersp(PR, (player.inCar ? 64 - 10 * camState.aimT + 14 * (player.boostT || 0) : 58 - 12 * camState.aimT) * Math.PI / 180, cw / chh, 0.15, 900);
     mLookAt(VW, e[0], e[1], e[2], e[0] + d[0], e[1] + d[1], e[2] + d[2]);
     mMul(VP, PR, VW);
     gl.useProgram(prog);
     gl.uniformMatrix4fv(U.uVP, false, VP);
     gl.uniform3fv(U.uSun, light.sun); gl.uniform3fv(U.uSunC, light.sunC); gl.uniform3fv(U.uAmb, light.amb);
     gl.uniform3fv(U.uFog, light.fog); gl.uniform3fv(U.uCam, e);
-    gl.uniform1f(U.uFogD, lerp(330, 230, light.night)); gl.uniform1f(U.uNight, light.night);
+    gl.uniform1f(U.uFogD, lerp(650, 520, light.night)); gl.uniform1f(U.uNight, light.night);
     updatePointLights();
     // Himmel
     gl.depthMask(false);
     mIdent(MA); tr(MA, e[0], e[1], e[2]); drawMesh(skyMesh, MA, light.top, null, 1);
     gl.depthMask(true);
     drawMesh(worldMesh, IDM, null, null, 1);
+    drawMesh(terrainMesh, IDM, null, null, 1);
     drawMesh(neonTubes, IDM, null, null, 1);
+    drawFerris(false);
     const flickOn = flickerOn();
     if (flickOn) drawMesh(flickTubes, IDM, null, null, 1);
     for (const hl of holos) drawHolo(hl, false);
+    drawSkyCars(false);
     for (const c of cars) if (visible(c.x, c.z, 4)) drawCar(c);
     for (const p of peds) if (visible(p.x, p.z, 2)) drawHuman(p);
     if (started && !player.inCar) drawHuman(player);
-    if (tony) { mIdent(MA); tr(MA, tony.x, tony.y + 2.35 + Math.sin(nowT * 3) * 0.12, tony.z); ry(MA, nowT * 2); sc(MA, 0.35, 0.35, 0.35); part(MA, [1, 0.8, 0.15], true); }
+    for (const g of givers) { mIdent(MA); tr(MA, g.ped.x, g.ped.y + 2.35 + Math.sin(nowT * 3) * 0.12, g.ped.z); ry(MA, nowT * 2); sc(MA, 0.35, 0.35, 0.35); part(MA, g.col, true); }
     for (const k of pickups) {
       mIdent(MA); tr(MA, k.x, groundY(k.x, k.z) + 0.45 + Math.sin(nowT * 4 + k.x) * 0.08, k.z); ry(MA, nowT * 2.5);
       if (!k.w) { sc(MA, 0.42, 0.24, 0.12); part(MA, [0.25, 0.8, 0.3], true); continue; }
@@ -1998,18 +3057,27 @@ function buildGame(canvas, radar, root, ui) {
     }
     // Transparentes
     gl.enable(gl.BLEND); gl.depthMask(false);
-    for (const c of cars) if (visible(c.x, c.z, 4)) { mIdent(MA); tr(MA, c.x, c.y + 0.03, c.z); ry(MA, c.yaw); sc(MA, c.T.Wd * 0.62, 1, c.T.L * 0.58); drawMesh(diskMesh, MA, SHADOW, null, 0.4); }
+    for (const c of cars) if (visible(c.x, c.z, 4)) {
+      const gy = c.air ? planeGround(c.x, c.z) : c.y, sw = c.T.span ? c.T.span * 0.45 : c.T.Wd * 0.62, sa = c.air ? clamp(0.4 - (c.y - gy) / 150, 0.08, 0.4) : 0.4;
+      mIdent(MA); tr(MA, c.x, gy + 0.03, c.z); ry(MA, c.yaw); sc(MA, sw, 1, c.T.L * 0.58); drawMesh(diskMesh, MA, SHADOW, null, sa);
+    }
     const shadowP = (p) => { mIdent(MA); tr(MA, p.x, groundY(p.x, p.z) + 0.03, p.z); sc(MA, p.state === 'dead' ? 0.9 : 0.45, 1, p.state === 'dead' ? 0.9 : 0.45); drawMesh(diskMesh, MA, p.state === 'dead' ? [0.35, 0.02, 0.02] : SHADOW, null, p.state === 'dead' ? 0.6 : 0.35); };
     for (const p of peds) if (visible(p.x, p.z, 2)) shadowP(p);
     if (started && !player.inCar) shadowP(player);
     const marker = (x, z, r, col, h) => { mIdent(MA); tr(MA, x, groundY(x, z), z); sc(MA, r, h || 1.1, r); drawMesh(cylMesh, MA, col, null, 0.38 + Math.sin(nowT * 4) * 0.08); };
     if (started) {
       for (const s of shops) {
-        if (s.kind === 'export' && !(mission && mission.def.id === 'export' && mission.stage === 1) && !(player.inCar && !mission)) continue;
+        if (s.kind === 'export' && !(mission && mission.def.id === 'export' && mission.si === 1) && !(player.inCar && !mission)) continue;
         marker(s.x, s.z, s.r * (s.drive ? 1 : 0.8), s.color, s.drive ? 0.6 : 1.1);
       }
-      if (tony && !mission) marker(tony.x, tony.z, 1.1, [1, 0.8, 0.15], 0.5);
-      if (mission && mission.target && !(mission.def.id === 'export' && mission.stage === 0)) marker(mission.target.x, mission.target.z, 2.6, [1, 0.85, 0.2], 1.6);
+      if (!mission) for (const g of givers) marker(g.ped.x, g.ped.z, 1.1, g.col, 0.5);
+      if (mission && mission.target && mission.markTarget) marker(mission.target.x, mission.target.z, 2.6, [1, 0.85, 0.2], 1.6);
+      // gesetzte Kartenmarkierungen: hohe Lichtsäule, von weitem sichtbar
+      for (const m of markers) if (Math.hypot(m.x - e[0], m.z - e[2]) < 700) {
+        if (!m.rgb) m.rgb = rgb(m.col);
+        mIdent(MA); tr(MA, m.x, groundY(m.x, m.z), m.z); sc(MA, 1.3, 80, 1.3); drawMesh(cylMesh, MA, m.rgb, null, 0.22);
+        marker(m.x, m.z, 3.2, m.rgb, 0.4);
+      }
     }
     for (const t of tracers) {
       const dx = t.x1 - t.x0, dy = t.y1 - t.y0, dz = t.z1 - t.z0, l = Math.hypot(dx, dy, dz) || 1;
@@ -2025,7 +3093,15 @@ function buildGame(canvas, radar, root, ui) {
     const glowA = lerp(0.3, 1, light.night);
     drawMesh(neonGlow, IDM, null, null, glowA);
     if (flickOn) drawMesh(flickGlow, IDM, null, null, glowA);
+    for (const c of cars) if (c.glow && visible(c.x, c.z, 4)) for (const [k, a] of [[0.62, 0.32], [0.85, 0.16], [1.1, 0.07]]) { mIdent(MA); tr(MA, c.x, c.y + 0.05, c.z); ry(MA, c.yaw); sc(MA, c.T.Wd * k, 1, c.T.L * k * 0.62); drawMesh(diskMesh, MA, c.glow, null, glowA * a); }
     for (const hl of holos) drawHolo(hl, true, glowA);
+    drawFerris(true, glowA);
+    drawSkyCars(true, glowA);
+    // Leuchtturm: zwei kreisende Lichtkegel
+    if (light.night > 0.1) for (const s of [0, Math.PI]) {
+      mIdent(MA); tr(MA, LH.x, LH.y + 23.5, LH.z); ry(MA, nowT * 0.9 + s); tr(MA, 0, 0, 30); sc(MA, 2.4, 1.3, 60);
+      drawMesh(unitGlow, MA, [1, 0.9, 0.55], null, 0.07 * light.night);
+    }
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthMask(true); gl.disable(gl.BLEND);
   }
@@ -2047,6 +3123,19 @@ function buildGame(canvas, radar, root, ui) {
       LC[i * 3] = l.c[0] * k; LC[i * 3 + 1] = l.c[1] * k; LC[i * 3 + 2] = l.c[2] * k;
     });
     gl.uniform4fv(U.uLP, LP); gl.uniform3fv(U.uLC, LC);
+  }
+  // Riesenrad: Rad dreht sich langsam um die Querachse, die Gondeln hängen immer senkrecht
+  function drawFerris(glow, a) {
+    if (Math.hypot(FW.x - camState.eye[0], FW.z - camState.eye[2]) > 520) return;
+    const ang = nowT * 0.12;
+    mIdent(MA); tr(MA, FW.x, FW.y, FW.z); rx(MA, ang);
+    if (glow) { drawMesh(fwGlow, MA, null, null, a); return; }
+    drawMesh(fwTubes, MA, null, null, 1);
+    for (let k = 0; k < 12; k++) {
+      const t = k / 12 * TAU + ang;
+      mIdent(MB); tr(MB, FW.x, FW.y + Math.cos(t) * FW.r - 1.4, FW.z + Math.sin(t) * FW.r); sc(MB, 1.8, 1.6, 1.5);
+      part(MB, k % 3 === 0 ? [1, 0.25, 0.75] : k % 3 === 1 ? [0.2, 0.85, 1] : [1, 0.85, 0.3], true);
+    }
   }
   // Flackernde Schilder: meist an, ab und zu kurze Aussetzer
   function flickerOn() {
@@ -2071,6 +3160,123 @@ function buildGame(canvas, radar, root, ui) {
 
   // ================= Radar =================
   const rctx = radar.getContext('2d');
+  // ================= Pausenkarte & Markierungen =================
+  // Karte im Pausenmenü: Norden oben, Westen links (wie das Radar). Zoomen mit Mausrad/Knöpfen, Ziehen verschiebt,
+  // Klick setzt eine Markierung, Klick auf eine Markierung oder Rechtsklick entfernt sie. Markierungen erscheinen auch auf dem Radar und als Lichtsäule.
+  const pmap = root.querySelector('#pmap'), pctx = pmap ? pmap.getContext('2d') : null;
+  const markers = [], MARK_COLS = ['#ff2bd6', '#22e6ff', '#ffe14d', '#39ff88', '#ff8a1f', '#a14bff', '#ff3355', '#3d7bff'], MAX_MARKS = 8;
+  const pm = { x: 0, z: 0, zoom: 1.2, drag: null, dirty: true };
+  const PM_MIN = 0.4, PM_MAX = 6;
+  let markSeq = 0;
+  function pmSize() { return [pmap.clientWidth || 1, pmap.clientHeight || 1]; }
+  function pmToScreen(x, z) { const s = pmSize(); return [(mapX(x) - mapX(pm.x)) * pm.zoom + s[0] / 2, (mapY(z) - mapY(pm.z)) * pm.zoom + s[1] / 2]; }
+  function pmToWorld(sx, sy) { const s = pmSize(); return [TX1 - (mapX(pm.x) + (sx - s[0] / 2) / pm.zoom), TZ1 - (mapY(pm.z) + (sy - s[1] / 2) / pm.zoom)]; }
+  function pmCenterOnPlayer() { const c = player.inCar || player; pm.x = c.x; pm.z = c.z; pm.dirty = true; }
+  function pmZoom(f, sx, sy) {
+    if (!pmap) return;
+    const s = pmSize(); if (sx == null) { sx = s[0] / 2; sy = s[1] / 2; }
+    const a = pmToWorld(sx, sy); pm.zoom = clamp(pm.zoom * f, PM_MIN, PM_MAX); const b = pmToWorld(sx, sy);
+    pm.x = clamp(pm.x + a[0] - b[0], TX0, TX1); pm.z = clamp(pm.z + a[1] - b[1], TZ0, TZ1); pm.dirty = true;
+  }
+  function markerAt(sx, sy, r) {
+    let best = -1, bd = r;
+    markers.forEach((m, i) => { const p = pmToScreen(m.x, m.z), d = Math.hypot(p[0] - sx, p[1] - sy - 12); if (d < bd) { bd = d; best = i; } });
+    return best;
+  }
+  function addMarker(x, z) {
+    if (markers.length >= MAX_MARKS) markers.shift();
+    markers.push({ x: x, z: z, col: MARK_COLS[markSeq++ % MARK_COLS.length] });
+    sfx('click', 0.6); markersUi();
+  }
+  function removeMarker(i) { if (i >= 0 && i < markers.length) { markers.splice(i, 1); sfx('click', 0.4); markersUi(); } }
+  function clearMarkers() { markers.length = 0; markersUi(); }
+  function markersUi() {
+    pm.dirty = true;
+    const c = player.inCar || player;
+    ui({ markers: markers.map((m, i) => {
+      const d = Math.hypot(m.x - c.x, m.z - c.z);
+      return { n: i + 1, col: m.col, label: (d < 1000 ? Math.round(d) + ' m' : (d / 1000).toFixed(1) + ' km') + ' · ' + zoneAt(m.x, m.z), remove: () => removeMarker(markers.indexOf(m)) };
+    }) });
+  }
+  function pmPin(g, x, y, col, label) {
+    g.beginPath(); g.moveTo(x, y); g.bezierCurveTo(x - 4, y - 8, x - 10, y - 12, x - 10, y - 19); g.arc(x, y - 19, 10, Math.PI, 0); g.bezierCurveTo(x + 10, y - 12, x + 4, y - 8, x, y);
+    g.fillStyle = col; g.fill(); g.lineWidth = 2; g.strokeStyle = '#000'; g.stroke();
+    g.fillStyle = '#000'; g.font = '700 12px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(label, x, y - 19);
+  }
+  function drawPauseMap() {
+    if (!pctx) return;
+    const s = pmSize(), W = s[0], H = s[1], dpr = Math.min(window.devicePixelRatio || 1, 2);
+    if (W < 2 || H < 2) return;
+    if (pmap.width !== Math.round(W * dpr) || pmap.height !== Math.round(H * dpr)) pm.dirty = true;
+    if (!pm.dirty) return;
+    pm.dirty = false;
+    if (pmap.width !== Math.round(W * dpr) || pmap.height !== Math.round(H * dpr)) { pmap.width = Math.round(W * dpr); pmap.height = Math.round(H * dpr); }
+    const g = pctx;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.fillStyle = '#16384e'; g.fillRect(0, 0, W, H);
+    g.save(); g.translate(W / 2, H / 2); g.scale(pm.zoom, pm.zoom); g.translate(-mapX(pm.x), -mapY(pm.z));
+    g.imageSmoothingEnabled = pm.zoom < 2.5; g.drawImage(mapCanvas, 0, 0);
+    g.restore();
+    const dot = (x, z, col, label, r) => {
+      const p = pmToScreen(x, z); r = r || 9;
+      g.beginPath(); g.arc(p[0], p[1], r, 0, TAU); g.fillStyle = col; g.fill(); g.lineWidth = 2; g.strokeStyle = '#000'; g.stroke();
+      if (label) { g.fillStyle = '#fff'; g.font = '700 11px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(label, p[0], p[1] + 0.5); }
+    };
+    for (const sh of shops) { const c = sh.color; dot(sh.x, sh.z, 'rgb(' + Math.round(c[0] * 255) + ',' + Math.round(c[1] * 255) + ',' + Math.round(c[2] * 255) + ')', sh.blip, 10); }
+    if (!mission) for (const g of givers) dot(g.ped.x, g.ped.z, g.css, g.blip, 10);
+    if (mission && mission.target) dot(mission.target.x, mission.target.z, mission.boss && mission.target === mission.boss ? '#ff3030' : '#f2c94c', '!', 10);
+    // eigener Wagen
+    if (ownCarAlive() && player.inCar !== ownCar) {
+      const p = pmToScreen(ownCar.x, ownCar.z);
+      g.save(); g.translate(p[0], p[1]); g.rotate(-ownCar.yaw);
+      g.beginPath(); g.arc(0, 0, 11, 0, TAU); g.fillStyle = 'rgba(0,0,0,0.7)'; g.fill(); g.lineWidth = 2; g.strokeStyle = '#22e6ff'; g.stroke();
+      g.fillStyle = '#22e6ff'; g.fillRect(-4.5, -7, 9, 14); g.fillStyle = '#06222a'; g.fillRect(-3.3, -4.2, 6.6, 2.6);
+      g.restore();
+    }
+    markers.forEach((m, i) => { const p = pmToScreen(m.x, m.z); pmPin(g, p[0], p[1], m.col, String(i + 1)); });
+    // Spieler
+    const c = player.inCar || player, pp = pmToScreen(c.x, c.z), py = player.inCar ? player.inCar.yaw : player.yaw;
+    g.save(); g.translate(pp[0], pp[1]); g.rotate(-py);
+    g.beginPath(); g.moveTo(0, -11); g.lineTo(8, 9); g.lineTo(0, 4.5); g.lineTo(-8, 9); g.closePath();
+    g.fillStyle = '#fff'; g.fill(); g.lineWidth = 2; g.strokeStyle = '#000'; g.stroke(); g.restore();
+    // Fadenkreuz in der Mitte (für Controller), Maßstab und Nordpfeil
+    if (inputMode === 'pad') { g.strokeStyle = 'rgba(255,255,255,0.85)'; g.lineWidth = 2; g.beginPath(); g.moveTo(W / 2 - 12, H / 2); g.lineTo(W / 2 + 12, H / 2); g.moveTo(W / 2, H / 2 - 12); g.lineTo(W / 2, H / 2 + 12); g.stroke(); }
+    const steps = [25, 50, 100, 200, 500, 1000];
+    let m = steps[steps.length - 1]; for (const v of steps) if (v * pm.zoom >= 70) { m = v; break; }
+    const L = m * pm.zoom;
+    g.fillStyle = 'rgba(0,0,0,0.6)'; g.fillRect(12, H - 40, L + 24, 28);
+    g.strokeStyle = '#fff'; g.lineWidth = 2; g.beginPath(); g.moveTo(24, H - 20); g.lineTo(24 + L, H - 20); g.moveTo(24, H - 25); g.lineTo(24, H - 15); g.moveTo(24 + L, H - 25); g.lineTo(24 + L, H - 15); g.stroke();
+    g.fillStyle = '#fff'; g.font = '700 12px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'bottom'; g.fillText(m >= 1000 ? (m / 1000) + ' km' : m + ' m', 24 + L / 2, H - 23);
+    g.font = '700 16px sans-serif'; g.textBaseline = 'middle'; g.fillText('N', 28, 26);
+    g.beginPath(); g.moveTo(28, 8); g.lineTo(23, 16); g.lineTo(33, 16); g.closePath(); g.fill();
+  }
+  if (pmap) {
+    const pos = (e) => { const r = pmap.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+    pmap.addEventListener('wheel', (e) => { e.preventDefault(); const p = pos(e); pmZoom(e.deltaY < 0 ? 1.2 : 1 / 1.2, p[0], p[1]); }, { passive: false });
+    pmap.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      const p = pos(e); pm.drag = { sx: p[0], sy: p[1], x: pm.x, z: pm.z, moved: false }; pmap.classList.add('dragging'); e.preventDefault();
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!pm.drag) return;
+      const p = pos(e), dx = p[0] - pm.drag.sx, dy = p[1] - pm.drag.sy;
+      if (Math.hypot(dx, dy) > 4) pm.drag.moved = true;
+      if (pm.drag.moved) { pm.x = clamp(pm.drag.x + dx / pm.zoom, TX0, TX1); pm.z = clamp(pm.drag.z + dy / pm.zoom, TZ0, TZ1); pm.dirty = true; }
+    });
+    window.addEventListener('mouseup', (e) => {
+      if (!pm.drag) return;
+      const d = pm.drag; pm.drag = null; pmap.classList.remove('dragging');
+      if (d.moved || e.button !== 0) return;
+      const i = markerAt(d.sx, d.sy, 16);
+      if (i >= 0) removeMarker(i); else { const w = pmToWorld(d.sx, d.sy); addMarker(w[0], w[1]); }
+    });
+    pmap.addEventListener('contextmenu', (e) => { e.preventDefault(); const p = pos(e); removeMarker(markerAt(p[0], p[1], 20)); });
+  }
+  // Ankommen an einer Markierung entfernt sie
+  function checkMarkers() {
+    const c = player.inCar || player;
+    for (let i = markers.length - 1; i >= 0; i--) if (Math.hypot(markers[i].x - c.x, markers[i].z - c.z) < 9) { markers.splice(i, 1); msg('Markierung erreicht', 2); sfx('click', 0.6); markersUi(); }
+  }
   function blipPos(x, z, px, pz, zoom, R) {
     let dx = (mapX(x) - mapX(px)) * zoom, dy = (mapY(z) - mapY(pz)) * zoom;
     const c = Math.cos(camState.yaw), s = Math.sin(camState.yaw);
@@ -2096,13 +3302,21 @@ function buildGame(canvas, radar, root, ui) {
       if (label) { g.fillStyle = '#fff'; g.font = '700 10px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(label, b[0], b[1] + 0.5); }
     };
     for (const s of shops) { const c = s.color; blip(s.x, s.z, 'rgb(' + Math.round(c[0] * 255) + ',' + Math.round(c[1] * 255) + ',' + Math.round(c[2] * 255) + ')', s.blip); }
-    if (tony && !mission) blip(tony.x, tony.z, '#e2a12b', 'T');
+    if (!mission) for (const g of givers) blip(g.ped.x, g.ped.z, g.css, g.blip);
     for (const c of cars) if (c.type === 'police' && c.driver && c.driver !== player && !c.wreck && (wanted > 0 || Math.hypot(c.x - px, c.z - pz) < 80)) blip(c.x, c.z, Math.floor(nowT * 4) % 2 ? '#2f5cff' : '#ff3030', null, 4);
     for (const p of peds) if (p.hostile && p.state !== 'dead') blip(p.x, p.z, '#ff3030', null, 4);
-    if (mission) {
-      if (mission.def.id === 'export' && mission.stage === 0) blip(mission.car.x, mission.car.z, '#f2c94c', null, 6);
-      else if (mission.vito) blip(mission.vito.x, mission.vito.z, '#ff3030', null, 6);
-      else if (mission.target) blip(mission.target.x, mission.target.z, '#f2c94c', null, 6);
+    markers.forEach((m, i) => blip(m.x, m.z, m.col, String(i + 1), 7));
+    if (mission && mission.target) blip(mission.target.x, mission.target.z, mission.boss && mission.target === mission.boss ? '#ff3030' : '#f2c94c', null, 6);
+    // Eigener Wagen: immer sichtbar, am Rand festgehalten, wenn er außerhalb des Radars steht
+    if (ownCarAlive() && player.inCar !== ownCar) {
+      const b = blipPos(ownCar.x, ownCar.z, px, pz, zoom, 84);
+      g.save(); g.translate(b[0], b[1]); g.rotate(camState.yaw - ownCar.yaw);
+      g.beginPath(); g.arc(0, 0, 11, 0, TAU); g.fillStyle = 'rgba(0,0,0,0.65)'; g.fill(); g.lineWidth = 2; g.strokeStyle = '#22e6ff'; g.stroke();
+      g.fillStyle = '#22e6ff'; g.strokeStyle = '#000'; g.lineWidth = 1;
+      g.beginPath(); g.moveTo(-3.5, -7); g.lineTo(3.5, -7); g.quadraticCurveTo(4.8, -7, 4.8, -5); g.lineTo(4.8, 6); g.quadraticCurveTo(4.8, 7.5, 3.3, 7.5);
+      g.lineTo(-3.3, 7.5); g.quadraticCurveTo(-4.8, 7.5, -4.8, 6); g.lineTo(-4.8, -5); g.quadraticCurveTo(-4.8, -7, -3.5, -7); g.closePath(); g.fill(); g.stroke();
+      g.fillStyle = '#06222a'; g.fillRect(-3.3, -4.2, 6.6, 2.6); g.fillRect(-3.3, 3, 6.6, 1.8);
+      g.restore();
     }
     // Spielerpfeil
     const py = player.inCar ? player.inCar.yaw : player.yaw;
@@ -2158,6 +3372,7 @@ function buildGame(canvas, radar, root, ui) {
         case 'door': noise(0.25 * vol, 0.1, 400); break;
         case 'horn': tone(392, 0.2 * vol, 0.35, 'square'); tone(494, 0.15 * vol, 0.35, 'square'); break;
         case 'spray': noise(0.3 * vol, 1.0, 4000, 'highpass'); break;
+        case 'nitro': noise(0.45 * vol, 0.7, 1600, 'bandpass'); tone(140, 0.2 * vol, 0.6, 'sawtooth', 360); break;
         case 'wanted': tone(660, 0.15 * vol, 0.12, 'triangle'); setTimeout(() => { if (AC) tone(880, 0.15 * vol, 0.18, 'triangle'); }, 120); break;
         case 'mission': [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => { if (AC) tone(f, 0.18 * vol, 0.25, 'triangle'); }, i * 120)); break;
         case 'wasted': tone(220, 0.3 * vol, 1.6, 'sawtooth', 55); break;
@@ -2194,13 +3409,15 @@ function buildGame(canvas, radar, root, ui) {
     let prompt = '';
     if (!player.dead && !paused && !gamePaused) {
       if (player.inCar) {
-        const L = [K('F', 'Y') + 'Aussteigen', K('E', 'L3') + (player.inCar.type === 'police' ? 'Sirene' : 'Hupe')];
+        const L = player.inCar.type === 'plane'
+          ? [K('F', 'Y') + 'Aussteigen (am Boden)', K('W / S', 'RT / LT') + 'Schub', K('A / D', 'Stick ← →') + 'Kurve', K('↓ / ↑', 'Stick ↓ ↑') + 'Nase hoch / runter']
+          : [K('F', 'Y') + 'Aussteigen', K('E', 'L3') + (player.inCar.type === 'police' ? 'Sirene' : 'Hupe'), K('Shift', 'A') + (player.nitroLock ? 'Nitro lädt …' : 'Nitro')];
         if (w.driveby) L.push(K('Rechte Maus', 'LB') + 'Zielen  ' + K('Linke Maus', 'RB') + 'Drive-by');
         prompt = L.join('\n');
       } else {
         const L = [], s = nearShop();
         if (s) L.push(K('E', '→') + s.name);
-        else if (tony && Math.hypot(tony.x - player.x, tony.z - player.z) < 2.6) L.push(K('E', '→') + 'Mit Tony reden');
+        else if (givers.some((g) => Math.hypot(g.ped.x - player.x, g.ped.z - player.z) < 2.6)) L.push(K('E', '→') + 'Mit ' + givers.find((g) => Math.hypot(g.ped.x - player.x, g.ped.z - player.z) < 2.6).ped.name + ' reden');
         else { const p = nearPed(); if (p) L.push(K('E', '→') + 'Ansprechen'); }
         const c = nearCar(); if (c && !c.wreck) L.push(K('F', 'Y') + (c.driver ? 'Auto klauen' : 'Einsteigen'));
         prompt = L.join('\n');
@@ -2208,22 +3425,22 @@ function buildGame(canvas, radar, root, ui) {
     }
     const hh = Math.floor(clockH), mm = Math.floor((clockH - hh) * 60);
     let timer = '';
-    if (mission && mission.def.id === 'courier' && mission.stage === 1) { const s = Math.max(0, Math.ceil(mission.timer)); timer = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+    if (mission && mission.timed) { const s = Math.max(0, Math.ceil(mission.timer)); timer = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
     const ammo = cur === 'fist' ? '' : (player.reloadT > 0 ? 'LÄDT…' : (player.clip[cur] || 0) + ' / ' + (player.weapons[cur] || 0));
     const aimVis = cur !== 'fist' && (camState.aimT > 0.5 || player.aimHold > 0) && (!player.inCar || (w.driveby && ctl.aim));
     ui({
       money: '$' + String(Math.floor(player.money)).padStart(8, '0'), hp: Math.round(player.hp), armor: Math.round(player.armor),
       weapon: w.name, ammo: ammo, stars: stars, clock: String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0'),
       prompt: prompt, message: msgT > 0 ? msgText : '', objective: objective, timer: timer,
-      zone: zoneName, zoneOn: zoneT > 0, vehicleOn: vehicleT > 0,
-      speed: player.inCar ? Math.round(Math.abs(player.inCar.speed) * 3.6) + ' km/h' : '',
+      zone: zoneName, zoneOn: zoneT > 0, vehicleOn: vehicleT > 0, nitro: Math.round(player.nitro * 100), nitroOn: !!player.inCar && !player.dead && player.inCar.type !== 'plane', nitroLock: !!player.nitroLock,
+      speed: player.inCar ? Math.round(Math.abs(player.inCar.speed) * 3.6) + ' km/h' + (player.inCar.type === 'plane' ? ' · ' + Math.max(0, Math.round(player.inCar.y - planeGround(player.inCar.x, player.inCar.z))) + ' m' : '') : '',
       crosshair: started && !player.dead && aimVis,
       hint: hintT > 0 ? 'Die Maus wird hier nicht eingefangen: Maustaste gedrückt halten und ziehen, um dich umzusehen.' : '', muted: muted
     });
   }
 
   // ================= Steuerung: Tastatur, Maus & Controller =================
-  let locked = false, wasLocked = false, lockFailed = false, inputMode = 'kbm', jumpReq = false;
+  let locked = false, wasLocked = false, lockFailed = false, inputMode = 'kbm', jumpReq = false, lockPauseAt = -1e9;
   const ctl = { mx: 0, mz: 0, mag: 0, sprint: false, aim: false, fire: false, thr: 0, steer: 0, hb: false, lookBack: false };
   const PB = { A: 0, B: 1, X: 2, Y: 3, LB: 4, RB: 5, LT: 6, RT: 7, BACK: 8, START: 9, L3: 10, R3: 11, UP: 12, DOWN: 13, LEFT: 14, RIGHT: 15 };
   const pad = { b: [], pb: [], ax: [0, 0, 0, 0], pax1: 0, connected: false, gp: null };
@@ -2258,7 +3475,10 @@ function buildGame(canvas, radar, root, ui) {
     ctl.sprint = !!(keys.ShiftLeft || keys.ShiftRight) || held(PB.A);
     ctl.aim = mouse.r || (inCar ? held(PB.LB) : held(PB.LT));
     ctl.fire = mouse.l || (inCar ? (held(PB.LB) && held(PB.RB)) : (pad.b[PB.RT] || 0) > 0.5);
-    ctl.thr = clamp(kz + (pad.b[PB.RT] || 0) - (pad.b[PB.LT] || 0), -1, 1);
+    const plane = inCar && player.inCar.type === 'plane';
+    // im Flugzeug: W/S Schub, Pfeil runter/hoch bzw. Stick ziehen/drücken = Nase hoch/runter
+    ctl.thr = clamp((plane ? (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0) : kz) + (pad.b[PB.RT] || 0) - (pad.b[PB.LT] || 0), -1, 1);
+    ctl.pitch = clamp((keys.ArrowDown ? 1 : 0) - (keys.ArrowUp ? 1 : 0) + (pad.ax[1] || 0), -1, 1);
     ctl.steer = clamp(kx + pad.ax[0], -1, 1);
     ctl.hb = !!keys.Space || (held(PB.RB) && !held(PB.LB));
     ctl.lookBack = !!keys.KeyC || held(PB.R3);
@@ -2266,8 +3486,10 @@ function buildGame(canvas, radar, root, ui) {
   function look(dx, dy) { camState.yaw -= dx * 0.0032; camState.pitch += dy * 0.0028; camState.lastInput = nowT; }
   function playerCarInput() {
     const c = player.inCar.inp;
-    c.thr = ctl.thr; c.steer = ctl.steer; c.hb = ctl.hb;
-    if (paused || gamePaused || player.dead) { c.thr = 0; c.steer = 0; c.hb = true; }
+    c.thr = ctl.thr; c.steer = ctl.steer; c.hb = ctl.hb; c.pitch = ctl.pitch;
+    // Nitro nur im Auto und erst wieder, wenn es nach dem Leerfahren voll aufgeladen ist
+    c.boost = player.inCar.type !== 'plane' && ctl.sprint && ctl.thr > 0.1 && player.nitro > 0 && !player.nitroLock;
+    if (paused || gamePaused || player.dead) { c.thr = 0; c.steer = 0; c.hb = true; c.boost = false; c.pitch = 0; }
     return c;
   }
   // Waffenrad
@@ -2320,8 +3542,9 @@ function buildGame(canvas, radar, root, ui) {
     if (!started || menu || player.dead) return;
     gamePaused = force != null ? force : !gamePaused;
     mouse.l = mouse.r = false;
-    if (gamePaused) { closeWheel(); try { if (document.pointerLockElement) document.exitPointerLock(); } catch (e) { /* egal */ } }
-    ui({ paused: gamePaused, pauseHint: inputMode === 'pad' ? 'Start oder A zum Weiterspielen' : 'P drücken oder auf WEITER klicken' });
+    if (gamePaused) { closeWheel(); try { if (document.pointerLockElement) document.exitPointerLock(); } catch (e) { /* egal */ } pmCenterOnPlayer(); markersUi(); }
+    ui({ paused: gamePaused, pauseHint: inputMode === 'pad' ? 'Start oder B zum Weiterspielen' : 'Esc oder P drücken oder auf WEITER klicken',
+      mapHelp: inputMode === 'pad' ? 'Linker Stick verschiebt · LB / RB zoomen · A setzt oder entfernt eine Markierung in der Mitte · Y zentriert auf dich' : 'Mausrad oder + / − zoomen · Ziehen oder Pfeiltasten verschieben · Klick setzt eine Markierung · Klick auf eine Markierung oder Rechtsklick entfernt sie' });
   }
   function padFrame(dt) {
     pollPad();
@@ -2335,7 +3558,16 @@ function buildGame(canvas, radar, root, ui) {
       return;
     }
     if (pressed(PB.START)) { togglePause(); return; }
-    if (gamePaused) { if (pressed(PB.A) || pressed(PB.B)) togglePause(false); return; }
+    if (gamePaused) {
+      if (pressed(PB.B)) { togglePause(false); return; }
+      // Karte: linker Stick verschiebt, LB/RB zoomen, A setzt/entfernt eine Markierung in der Mitte, Y zentriert
+      const lx = pad.ax[0], ly = pad.ax[1];
+      if (Math.abs(lx) + Math.abs(ly) > 0.15) { pm.x = clamp(pm.x - lx * 260 / pm.zoom * dt, TX0, TX1); pm.z = clamp(pm.z - ly * 260 / pm.zoom * dt, TZ0, TZ1); pm.dirty = true; }
+      if (held(PB.RB)) pmZoom(1 + 1.5 * dt); if (held(PB.LB)) pmZoom(1 / (1 + 1.5 * dt));
+      if (pressed(PB.Y)) pmCenterOnPlayer();
+      if (pressed(PB.A)) { const s = pmSize(), i = markerAt(s[0] / 2, s[1] / 2 + 12, 22); if (i >= 0) removeMarker(i); else addMarker(pm.x, pm.z); }
+      return;
+    }
     if (player.dead) return;
     if (pressed(PB.Y)) pressF();
     if (pressed(PB.RIGHT)) pressE();
@@ -2343,6 +3575,7 @@ function buildGame(canvas, radar, root, ui) {
     if (!player.inCar && pressed(PB.B)) startReload();
     if (pressed(PB.LEFT)) switchWeapon(1);
     if (pressed(PB.BACK)) cycleCam();
+    if (pressed(PB.DOWN)) callCar();
     if (!player.inCar && pressed(PB.X)) jumpReq = true;
     if (player.inCar ? (held(PB.LB) && pressed(PB.RB)) : pressed(PB.RT)) mouse.clicked = true;
     if (!player.inCar) { if (held(PB.LB) && !wheelOpen) openWheel(); else if (!held(PB.LB) && wheelOpen && !keys.Tab) closeWheel(); }
@@ -2357,7 +3590,7 @@ function buildGame(canvas, radar, root, ui) {
       camState.yaw -= Math.sign(lx) * lx * lx * 3.2 * s * dt; camState.pitch += Math.sign(ly) * ly * ly * 2.2 * s * dt; camState.lastInput = nowT;
     }
   }
-  const GAMEKEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyE', 'KeyF', 'KeyQ', 'KeyR', 'KeyC', 'KeyV', 'KeyP', 'KeyM', 'ShiftLeft', 'ShiftRight', 'Tab', 'Enter', 'Backspace'];
+  const GAMEKEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyE', 'KeyF', 'KeyQ', 'KeyR', 'KeyC', 'KeyV', 'KeyP', 'KeyM', 'KeyL', 'ShiftLeft', 'ShiftRight', 'Tab', 'Enter', 'Backspace'];
   function onKeyDown(e) {
     if (AC && AC.state === 'suspended') { try { AC.resume(); } catch (err) { /* egal */ } }
     if (!started) { if (e.code === 'Enter') { e.preventDefault(); startGame(false); } return; }
@@ -2373,8 +3606,23 @@ function buildGame(canvas, radar, root, ui) {
       else if (e.code === 'Escape' || e.code === 'KeyE' || e.code === 'Backspace') closeMenu();
       return;
     }
-    if (e.code === 'KeyP' || (e.code === 'Escape' && gamePaused)) { togglePause(); return; }
-    if (gamePaused || player.dead) return;
+    // Esc pausiert immer; kam die Pause gerade erst durch das Freigeben der Maus (auch Esc), nicht gleich wieder aufheben
+    if (e.code === 'Escape' && gamePaused && performance.now() - lockPauseAt < 400) return;
+    if (e.code === 'KeyP' || e.code === 'Escape') { togglePause(); return; }
+    if (gamePaused) {
+      // Karte im Pausenmenü: Pfeiltasten/WASD verschieben, + / − zoomen, C zentriert, Entf löscht alle Markierungen
+      const step = 60 / pm.zoom;
+      if (e.code === 'ArrowLeft' || e.code === 'KeyA') { pm.x = clamp(pm.x + step, TX0, TX1); pm.dirty = true; }
+      else if (e.code === 'ArrowRight' || e.code === 'KeyD') { pm.x = clamp(pm.x - step, TX0, TX1); pm.dirty = true; }
+      else if (e.code === 'ArrowUp' || e.code === 'KeyW') { pm.z = clamp(pm.z + step, TZ0, TZ1); pm.dirty = true; }
+      else if (e.code === 'ArrowDown' || e.code === 'KeyS') { pm.z = clamp(pm.z - step, TZ0, TZ1); pm.dirty = true; }
+      else if (e.code === 'Equal' || e.code === 'NumpadAdd' || e.code === 'BracketRight') pmZoom(1.4);
+      else if (e.code === 'Minus' || e.code === 'NumpadSubtract' || e.code === 'Slash') pmZoom(1 / 1.4);
+      else if (e.code === 'KeyC') pmCenterOnPlayer();
+      else if (e.code === 'Delete') clearMarkers();
+      return;
+    }
+    if (player.dead) return;
     if (e.code === 'KeyE') pressE();
     else if (e.code === 'KeyF' || e.code === 'Enter') pressF();
     else if (e.code === 'KeyR') startReload();
@@ -2383,6 +3631,7 @@ function buildGame(canvas, radar, root, ui) {
     else if (/^Digit[1-5]$/.test(e.code)) selectWeapon(parseInt(e.code.slice(5), 10) - 1);
     else if (e.code === 'KeyV') cycleCam();
     else if (e.code === 'KeyM') toggleMute();
+    else if (e.code === 'KeyL') callCar();
   }
   function onKeyUp(e) { keys[e.code] = false; if (e.code === 'Tab') closeWheel(); }
   function requestLock() {
@@ -2414,7 +3663,7 @@ function buildGame(canvas, radar, root, ui) {
   function onLockChange() {
     locked = document.pointerLockElement === canvas;
     if (locked) { wasLocked = true; lockFailed = false; hintT = 0; }
-    else if (wasLocked && started && !menu && !gamePaused && !player.dead) togglePause(true);
+    else if (wasLocked && started && !menu && !gamePaused && !player.dead) { togglePause(true); lockPauseAt = performance.now(); }
   }
   function onLockError() { if (!lockFailed) { lockFailed = true; hintT = 7; } }
   function onBlur() { for (const k in keys) keys[k] = false; mouse.l = mouse.r = false; closeWheel(); }
@@ -2434,42 +3683,116 @@ function buildGame(canvas, radar, root, ui) {
   // ================= Spielablauf =================
   function populate() {
     for (let i = 0; i < 30; i++) spawnTraffic(0, 9999);
-    for (let i = 0; i < 2; i++) { const c = spawnTraffic(0, 9999); if (c && c.type !== 'police') { c.type = 'police'; c.T = CAR_TYPES.police; c.mesh = carMeshes.police; c.paint = rgb('#15181d'); Object.assign(c.driver, makePed('cop', 0, 0), { inCar: c }); } }
+    for (let i = 0; i < 2; i++) { const c = spawnTraffic(0, 9999); if (c && c.type !== 'police') { c.type = 'police'; c.T = CAR_TYPES.police; c.mesh = carMeshes.police; c.paint = rgb('#15181d'); c.glow = null; Object.assign(c.driver, makePed('cop', 0, 0), { inCar: c }); } }
     for (let i = 0; i < 14; i++) {
       const sp = roadSpawnPoint(0, 9999); if (!sp) continue;
       const ox = Math.round(Math.cos(sp.yaw)) * -2.2, oz = Math.round(Math.sin(sp.yaw)) * 2.2;
       spawnCar(pick(['sedan', 'sedan', 'pickup', 'van', 'sport', 'taxi']), sp.x + ox, sp.z + oz, sp.yaw, 'parked');
     }
-    for (let i = 0; i < 64; i++) spawnWalker(i % 13 === 0 ? 'cop' : 'civ');
+    for (let i = 0; i < 72; i++) spawnWalker(i % 13 === 0 ? 'cop' : 'civ');
     const b = blockRect(5, 0);
     tony = addPed(makePed('giver', b.cx + 4, b.z0 + 1.6));
     Object.assign(tony, { name: 'Tony', hp: 1e9, state: 'stand', shirt: rgb('#f4f1ea'), pants: rgb('#f4f1ea'), hair: rgb('#111111'), cash: 0, hairStyle: 0, sleeve: true, h: 1.02, bw: 1.12 });
+    // Nova vermittelt Kurierjobs, sie steht am Späti
+    const sp = shopOf('spaeti');
+    nova = addPed(makePed('giver', sp.x - 5, sp.z));
+    Object.assign(nova, { name: 'Nova', hp: 1e9, state: 'stand', yaw: Math.PI, shirt: rgb('#22e6ff'), pants: rgb('#1b1d22'), hair: rgb('#ff2bd6'), cash: 0, hairStyle: 1, sleeve: false, h: 0.97, bw: 0.95, bag: rgb('#ffe14d') });
+    givers.push({ ped: tony, col: [1, 0.8, 0.15], css: '#e2a12b', blip: 'T', talk: talkTony }, { ped: nova, col: [0.63, 0.3, 1], css: '#a14bff', blip: 'N', talk: talkNova });
   }
   function placePlayer() {
+    spawnPlane();
     const s = shopOf('waffen');
     player.x = s.x + 5; player.z = s.z; player.y = groundY(player.x, player.z); player.yaw = 1.1;
     camState.yaw = 1.1; camState.pitch = 0.2;
-    const c = spawnCar('sedan', s.x + 12, roadC(2) + LANE + 2.0, Math.PI / 2, 'parked'); c.paint = rgb('#1f3d6b');
+    const c = spawnCar('sedan', s.x + 12, roadC(2) + LANE + 2.0, Math.PI / 2, 'parked'); c.paint = rgb('#1f3d6b'); c.glow = rgb('#22e6ff');
+    makeOwn(c);
+  }
+  // Nitro: lädt sich in rund 14 s voll, eine volle Ladung reicht für gut 3 s Schub
+  function nitroTick(dt) {
+    const c = player.inCar, on = !!c && !!c.inp.boost && !c.wreck;
+    player.nitro = on ? Math.max(0, player.nitro - dt / 3.2) : Math.min(1, player.nitro + dt / 14);
+    // leer gefahren: gesperrt, bis es wieder ganz voll ist
+    if (player.nitro <= 0 && !player.nitroLock) { player.nitroLock = true; msg('Nitro leer – lädt auf', 1.6); }
+    if (player.nitroLock && player.nitro >= 1) { player.nitroLock = false; msg('Nitro bereit', 1.2); }
+    player.boostT += ((on ? 1 : 0) - player.boostT) * Math.min(1, (on ? 6 : 3) * dt);
+    if (on && !player.boostOn) { sfx('nitro', 0.7); rumble(0.5, 0.8, 220); }
+    player.boostOn = on;
+    if (!on) return;
+    shake = Math.max(shake, 0.04);
+    // Flammen aus zwei Auspuffrohren am Heck
+    const fx = Math.sin(c.yaw), fz = Math.cos(c.yaw), rx = -fz, rz = fx, back = c.T.L / 2 + 0.15;
+    for (const s of [-1, 1]) {
+      const x = c.x - fx * back + rx * s * c.T.Wd * 0.28, z = c.z - fz * back + rz * s * c.T.Wd * 0.28;
+      addParticle(x, c.y + 0.42, z, c.vx * 0.6 - fx * rand(4, 7) + rand(-0.6, 0.6), rand(-0.2, 0.5), c.vz * 0.6 - fz * rand(4, 7) + rand(-0.6, 0.6), rand(0.12, 0.26), rand(0.14, 0.24), Math.random() < 0.5 ? [0.3, 0.75, 1] : [1, 0.35, 0.95], 0);
+    }
+  }
+  // Szenenplätze nur in Spielernähe besetzen: Leute erscheinen außer Sicht (30–110 m) und verschwinden ab 150 m wieder
+  function updateSpots(px, pz) {
+    for (const s of spots) {
+      const d = Math.hypot(s.x - px, s.z - pz), p = s.ped;
+      if (p) {
+        const gone = peds.indexOf(p) < 0;
+        if (gone || (p.state !== 'idle' && p.state !== 'talk')) { if (!gone) p.spot = null; s.ped = null; s.cool = 25; continue; }
+        if (d > 150) { peds.splice(peds.indexOf(p), 1); s.ped = null; }
+        continue;
+      }
+      s.cool -= 0.5;
+      if (s.cool > 0 || d > 110 || d < 30) continue;
+      const q = makePed('civ', s.x, s.z);
+      Object.assign(q, { state: 'idle', stateT: 1e9, act: s.act, yaw: s.yaw, spot: s, cash: randi(5, 40) });
+      if (s.act === 'vendor') { q.shirt = rgb('#e8e8e2'); q.sleeve = false; }
+      if (s.act === 'wait' && Math.random() < 0.4) q.bag = rgb(pick(['#c9a46c', '#d8d4cc', '#b03a5a']));
+      addPed(q); s.ped = q;
+    }
+  }
+  // Fliegende Autos über den Straßenachsen, Dampf aus Gullydeckeln
+  const skyCars = [];
+  for (let k = 0; k < 10; k++) {
+    const alongX = k % 2 === 0, lane = roadC(1 + (k * 3) % 6);
+    skyCars.push({ alongX: alongX, lane: lane, y: 34 + (k % 4) * 9, pos: rand(-250, 670), dir: k % 3 === 0 ? -1 : 1, v: rand(22, 34),
+      type: pick(['sport', 'sedan', 'taxi', 'van']), paint: rgb(pick(['#1b1d22', '#e8e8e2', '#2a2f3a', '#8b1e3a', '#f2c230'])), glow: rgb(pick(['#ff2bd6', '#22e6ff', '#a14bff', '#39ff88'])) });
+  }
+  let ventT = 0;
+  function ambientTick(dt) {
+    for (const s of skyCars) { s.pos += s.v * s.dir * dt; if (s.pos > 670) s.pos -= 920; else if (s.pos < -250) s.pos += 920; }
+    ventT -= dt;
+    if (ventT > 0) return;
+    ventT = 0.3;
+    for (const v of vents) if (Math.hypot(v.x - player.x, v.z - player.z) < 70) addParticle(v.x + rand(-0.2, 0.2), 0.15, v.z + rand(-0.2, 0.2), rand(-0.25, 0.25), rand(0.7, 1.1), rand(-0.25, 0.25), rand(2.2, 3.2), 0.5, [0.42, 0.44, 0.52], 0.25);
+  }
+  function skyCarPos(s) { return s.alongX ? [s.pos, s.lane + 2.5 * s.dir] : [s.lane - 2.5 * s.dir, s.pos]; }
+  function drawSkyCars(glow, a) {
+    for (const s of skyCars) {
+      const p = skyCarPos(s), yaw = s.alongX ? (s.dir > 0 ? Math.PI / 2 : -Math.PI / 2) : (s.dir > 0 ? 0 : Math.PI);
+      if (!visible(p[0], p[1], 6)) continue;
+      mIdent(MA); tr(MA, p[0], s.y + Math.sin(nowT * 1.3 + s.lane) * 0.4, p[1]); ry(MA, yaw); rz(MA, Math.sin(nowT * 0.9 + s.pos * 0.01) * 0.05);
+      if (!glow) { drawMesh(carMeshesLo[s.type], MA, s.paint, s.paint, 1); continue; }
+      const T = CAR_TYPES[s.type];
+      for (const [k, al] of [[0.6, 0.45], [0.95, 0.18]]) { mCopy(MB, MA); tr(MB, 0, -0.05, 0); sc(MB, T.Wd * k, 1, T.L * k * 0.62); drawMesh(diskMesh, MB, s.glow, null, a * al); }
+    }
   }
   function recycle() {
     const px = player.x, pz = player.z;
     let civs = 0, traffic = 0;
     for (let i = peds.length - 1; i >= 0; i--) {
       const p = peds[i];
-      if (p === tony || (mission && mission.peds.indexOf(p) >= 0)) continue;
+      if (p.kind === 'giver' || (mission && mission.peds.indexOf(p) >= 0)) continue;
       const far = Math.hypot(p.x - px, p.z - pz) > 70;
       if (p.state === 'dead' && p.deadT > 40 && far) { peds.splice(i, 1); continue; }
-      if (p.state !== 'dead') civs++;
+      if (p.state !== 'dead' && !p.spot) civs++;
     }
+    updateSpots(px, pz);
     for (let i = cars.length - 1; i >= 0; i--) {
       const c = cars[i];
-      if (c === player.inCar || (mission && mission.car === c)) continue;
+      if (c === player.inCar || (mission && mission.car === c) || (c === ownCar && !c.wreck)) continue;
       const d = Math.hypot(c.x - px, c.z - pz);
       if (c.wreck && c.deadT > 45 && d > 70) { cars.splice(i, 1); continue; }
-      if (c.mode === 'parked' && !c.driver && d > 260) { cars.splice(i, 1); continue; }
+      if (c.mode === 'parked' && !c.driver && d > 260 && c.type !== 'plane') { cars.splice(i, 1); continue; }
       if (c.driver && c.mode === 'traffic') traffic++;
     }
-    if (civs < 60) spawnWalker(Math.random() < 0.08 ? 'cop' : 'civ');
+    // zerstörtes Flugzeug wird außer Sicht am Flughafen ersetzt
+    if (!cars.some((c) => c.type === 'plane' && !c.wreck) && Math.hypot(px - PLANE.apronX, pz - PLANE.apronZ) > 150) spawnPlane();
+    if (civs < 70) spawnWalker(Math.random() < 0.08 ? 'cop' : 'civ');
     if (traffic < 30) spawnTraffic(90, 400);
   }
   let recycleT = 0;
@@ -2480,6 +3803,9 @@ function buildGame(canvas, radar, root, ui) {
     const frozen = paused || gamePaused;
     if (started && !frozen) {
       if (respawnT > 0) { respawnT -= dt; if (respawnT <= 0) respawn(); }
+      callT = Math.max(0, callT - dt);
+      if (markers.length) checkMarkers();
+      nitroTick(dt);
       updateReload(dt);
       updatePlayerFoot(dt);
       updateWanted(dt);
@@ -2491,6 +3817,7 @@ function buildGame(canvas, radar, root, ui) {
     }
     if (!frozen) {
       updateCars(dt);
+      ambientTick(dt);
       for (let i = peds.length - 1; i >= 0; i--) stepPed(peds[i], dt);
       carCollisions();
       stepFx(dt);
@@ -2502,6 +3829,9 @@ function buildGame(canvas, radar, root, ui) {
   function updatePlayerFoot(dt) {
     if (player.dead) { player.fall = Math.min(1, (player.fall || 0) + dt * 2.5); return; }
     player.shootT -= dt; player.aimHold -= dt; player.punchT = Math.max(0, player.punchT - dt);
+    player.comboT = (player.comboT || 0) - dt; player.guardT = Math.max(0, (player.guardT || 0) - dt);
+    if (player.punchHit > 0) { player.punchHit -= dt; if (player.punchHit <= 0) punchImpact(); }
+    if (player.cur !== 'fist') player.guardT = 0;
     if (ctl.fire && !menu) tryFire();
     const c = player.inCar;
     if (c) {
@@ -2549,12 +3879,19 @@ function buildGame(canvas, radar, root, ui) {
       if (player.money >= 100) {
         player.money -= 100; c.paint = rgb(pick(['#8b1e1e', '#1f3d6b', '#d8d8d2', '#2a2a2a', '#5d6b3a', '#b58b3a', '#6b2a8a', '#1e7a6a']));
         c.hp = 100; c.onFire = false; endPursuit(); msg('Spray & Weg: neue Farbe, neue Identität! -$100', 3); sfx('spray', 0.7); lackCool = 6;
+        if (c === ownCar) makeOwn(c); // neue Farbe merken
+        else if (!(mission && mission.car === c)) openDialog('Spray & Weg', 'Frisch lackiert! Soll dieser ' + c.T.name + ' ab jetzt dein Hauptwagen sein? Den rufst du dann mit L.', [
+          { label: 'Ja, mein neuer Hauptwagen', act: () => { makeOwn(c); closeMenu(); msg('Neuer Hauptwagen: ' + c.T.name + '. Mit L rufst du ihn.', 3); sfx('cash', 0.5); } },
+          { label: 'Nein, nur lackieren' }
+        ]);
       } else msg('Neue Farbe kostet $100. Komm wieder, wenn du flüssig bist.', 3);
     }
     inLack = nowLack;
     const nowExp = !!c && Math.hypot(c.x - exp.x, c.z - exp.z) < exp.r;
     if (nowExp && !inExport && exportCool <= 0 && !(mission && mission.car === c)) {
-      if (wanted > 0) msg('Die Garage nimmt keine heißen Karren. Hänge erst die Polizei ab.', 3);
+      if (c === ownCar) msg('Deinen eigenen Wagen verkaufst du nicht.', 2.5);
+      else if (c.type === 'plane') msg('Ein Flugzeug passt hier nicht rein.', 2.5);
+      else if (wanted > 0) msg('Die Garage nimmt keine heißen Karren. Hänge erst die Polizei ab.', 3);
       else {
         const base = { sport: 900, police: 600, pickup: 350, van: 300, sedan: 250, taxi: 220 }[c.type] || 200;
         const v = Math.round(base * (0.3 + 0.7 * c.hp / 100));
@@ -2592,6 +3929,7 @@ function buildGame(canvas, radar, root, ui) {
     updateLight();
     updateCamera(dt);
     render();
+    if (gamePaused) drawPauseMap();
     if (started) {
       radarT -= dt; if (radarT <= 0) { radarT = 1 / 30; drawRadar(); }
       hudTick(dt); updateAudio();
@@ -2602,6 +3940,9 @@ function buildGame(canvas, radar, root, ui) {
     start() { startGame(false); },
     resume() { togglePause(false); try { root.focus(); } catch (e) { /* egal */ } requestLock(); },
     toggleMute: toggleMute,
+    mapZoom: (f) => pmZoom(f),
+    mapCenter: pmCenterOnPlayer,
+    clearMarkers: clearMarkers,
     closeMenu: closeMenu,
     destroy() {
       destroyed = true; cancelAnimationFrame(raf);
