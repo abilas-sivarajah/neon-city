@@ -143,13 +143,21 @@ function buildGame(canvas, radar, root, ui) {
     'uniform mat4 uVP; uniform mat4 uM;\n' +
     'varying vec3 vN; varying vec3 vW; varying vec4 vC;\n' +
     'void main(){ vec4 w = uM*vec4(aP,1.0); vW = w.xyz; vN = (uM*vec4(aN,0.0)).xyz; vC = aC; gl_Position = uVP*w; }';
+  // Punktlichter für Neon und Laternen: so viele, wie die Grafikkarte an Uniforms erlaubt
+  const NL = (gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS) || 16) >= 80 ? 24 : 8;
   const FS = '#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n' +
+    '#define NL ' + NL + '\n' +
+    'uniform vec4 uLP[NL]; uniform vec3 uLC[NL];\n' +
     'varying vec3 vN; varying vec3 vW; varying vec4 vC;\n' +
     'uniform vec3 uSun; uniform vec3 uSunC; uniform vec3 uAmb; uniform vec3 uFog; uniform vec3 uCam; uniform vec3 uPaint; uniform vec3 uPaint2;\n' +
     'uniform float uFogD; uniform float uNight; uniform float uAlpha;\n' +
     'float h21(vec2 p){ return fract(sin(dot(p, vec2(12.9898,78.233)))*43758.5453); }\n' +
     'void main(){\n' +
     ' float m = vC.a; vec3 c = vC.rgb; vec3 n = normalize(vN);\n' +
+    ' if (m > 6.5) {\n' +
+    '  float gd = length(vW - uCam); float gf = clamp((gd - uFogD*0.3)/(uFogD*0.7), 0.0, 1.0);\n' +
+    '  gl_FragColor = vec4(c*uPaint*(1.0 - gf*gf), uAlpha); return;\n' +
+    ' }\n' +
     ' if (m > 5.5) {\n' +
     '  vec3 v = normalize(vW - uCam); float t = clamp(v.y*1.6, 0.0, 1.0);\n' +
     '  vec3 s = mix(uFog, uPaint, sqrt(t)); float sd = max(dot(v, uSun), 0.0);\n' +
@@ -161,13 +169,21 @@ function buildGame(canvas, radar, root, ui) {
     ' if (m > 3.5) { col = c; } else {\n' +
     '  float dif = max(dot(n, uSun), 0.0); float hemi = 0.75 + 0.25*n.y;\n' +
     '  col = c*(uAmb*hemi + uSunC*dif);\n' +
+    '  vec3 pl = vec3(0.0);\n' +
+    '  for (int i = 0; i < NL; i++) {\n' +
+    '   vec3 L = uLP[i].xyz - vW; float d2 = dot(L, L); float r = uLP[i].w;\n' +
+    '   if (d2 < r*r) { float dl = sqrt(d2); float f = 1.0 - dl/r; pl += uLC[i]*f*f*max(dot(n, L/max(dl, 0.001))*0.6 + 0.4, 0.0); }\n' +
+    '  }\n' +
+    '  col += c*pl;\n' +
     '  if (m > 0.5 && m < 1.5 && abs(n.y) < 0.5 && vW.y > 1.0) {\n' +
     '   float along = abs(n.x) > 0.5 ? vW.z : vW.x;\n' +
     '   vec2 cell = vec2(along/2.8, vW.y/3.4); vec2 f = fract(cell);\n' +
     '   if (f.x > 0.2 && f.x < 0.8 && f.y > 0.28 && f.y < 0.82) {\n' +
     '    float r = h21(floor(cell) + floor(vW.xz/40.0));\n' +
-    '    vec3 glass = mix(vec3(0.16,0.2,0.26), vec3(0.5,0.6,0.7), 0.35 + 0.3*r)*(uAmb*1.2 + uSunC*dif*0.6);\n' +
-    '    vec3 lamp = vec3(1.0,0.82,0.5)*step(0.45, r)*(0.7 + 0.3*r);\n' +
+    '    vec3 glass = mix(vec3(0.12,0.16,0.24), vec3(0.45,0.58,0.72), 0.35 + 0.3*r)*(uAmb*1.2 + uSunC*dif*0.6);\n' +
+    '    float r2 = h21(floor(cell)*1.7 + vec2(3.1, 7.7));\n' +
+    '    vec3 lc = r2 < 0.5 ? vec3(1.0,0.8,0.55) : (r2 < 0.75 ? vec3(0.35,0.9,1.0) : vec3(1.0,0.4,0.85));\n' +
+    '    vec3 lamp = lc*step(0.45, r)*(0.7 + 0.3*r);\n' +
     '    col = mix(glass, max(glass, lamp), uNight);\n' +
     '   }\n' +
     '  }\n' +
@@ -189,6 +205,7 @@ function buildGame(canvas, radar, root, ui) {
   gl.enableVertexAttribArray(A.P); gl.enableVertexAttribArray(A.N); gl.enableVertexAttribArray(A.C);
   const U = {};
   ['uVP', 'uM', 'uSun', 'uSunC', 'uAmb', 'uFog', 'uCam', 'uPaint', 'uPaint2', 'uFogD', 'uNight', 'uAlpha'].forEach((k) => { U[k] = gl.getUniformLocation(prog, k); });
+  U.uLP = gl.getUniformLocation(prog, 'uLP[0]'); U.uLC = gl.getUniformLocation(prog, 'uLC[0]');
   gl.enable(gl.DEPTH_TEST);
   gl.disable(gl.CULL_FACE);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -218,6 +235,7 @@ function buildGame(canvas, radar, root, ui) {
   const IDM = m4(), MA = m4(), MB = m4(), MC = m4();
   const unitLit = (() => { const g = geo(); box(g, -0.5, -0.5, -0.5, 0.5, 0.5, 0.5, [1, 1, 1, 2]); return upload(g); })();
   const unitEmis = (() => { const g = geo(); box(g, -0.5, -0.5, -0.5, 0.5, 0.5, 0.5, [1, 1, 1, 5]); return upload(g); })();
+  const unitGlow = (() => { const g = geo(); box(g, -0.5, -0.5, -0.5, 0.5, 0.5, 0.5, [1, 1, 1, 7]); return upload(g); })();
   const cylMesh = upload(cylGeo(24, [1, 1, 1, 5]));
   const diskMesh = upload(diskGeo(16, [1, 1, 1, 5]));
   const skyMesh = (() => { const g = geo(); box(g, -400, -400, -400, 400, 400, 400, [1, 1, 1, 6]); return upload(g); })();
@@ -325,17 +343,113 @@ function buildGame(canvas, radar, root, ui) {
   const shops = [];
   const parks = [];
   const C = {
-    asphalt: hexc('#3a3d42'), side: hexc('#a9a59b'), line: hexc('#e8d27a'), zebra: hexc('#d9d9d2'),
-    grass: hexc('#6a8a48'), concrete: hexc('#8c8c86'), old: hexc('#7d7a70'), port: hexc('#5b5e60'),
-    pole: hexc('#3b3f45'), lamp: hexc('#ffe7b0', 4), trunk: hexc('#7a5a3a'), frond: hexc('#4f7f35'), frond2: hexc('#3f6b2c'),
-    leaf: hexc('#3f6b35'), leaf2: hexc('#4d7d3c'), water: hexc('#2f6f8f'), barrier: hexc('#9a958a'), hill: hexc('#6f7a4a'), hill2: hexc('#5f6a3f')
+    asphalt: hexc('#2a2c33'), side: hexc('#7d7f86'), line: hexc('#e8d27a'), zebra: hexc('#c9cbd2'),
+    grass: hexc('#4f7a45'), concrete: hexc('#5d6068'), old: hexc('#5f5a58'), port: hexc('#46494e'),
+    pole: hexc('#2b2f36'), lamp: hexc('#c8f6ff', 4), trunk: hexc('#6a4e36'), frond: hexc('#3f7a3a'), frond2: hexc('#33662f'),
+    leaf: hexc('#35603a'), leaf2: hexc('#407045'), water: hexc('#1d4a66'), barrier: hexc('#6d6e74'), hill: hexc('#3d4440'), hill2: hexc('#333a37')
   };
+
+  // ---- Neon: Leuchtröhren mit Glüh-Halo ----
+  // Röhren landen in eigenen Meshes (neonT), der Halo in einem additiv gezeichneten Mesh (neonG). Flackernde Schilder getrennt.
+  const NEON = ['#ff2bd6', '#22e6ff', '#a14bff', '#ffe14d', '#39ff88', '#ff3355', '#ff8a1f', '#3d7bff'];
+  const neonT = geo(), neonG = geo(), flickT = geo(), flickG = geo();
+  let nseed = 777, flick = false;
+  // eigener Zufall, damit die Stadtaufteilung (srand) unverändert bleibt
+  const nr = () => { nseed = (nseed * 16807) % 2147483647; return (nseed - 1) / 2147483646; };
+  const nrr = (a, b) => a + nr() * (b - a), npick = (arr) => arr[Math.floor(nr() * arr.length)];
+  const ncol = () => hexc(npick(NEON));
+  // Lichtquellen, die farbiges Licht auf die Umgebung werfen (Auswahl der nächsten pro Bild in updatePointLights)
+  const lightSrc = [];
+  function addLight(x, y, z, col, r, k, lamp) { lightSrc.push({ x: x, y: y, z: z, r: r, c: [col[0] * k, col[1] * k, col[2] * k], neon: !lamp }); }
+  function tube(ax, ay, az, bx, by, bz, t, col) {
+    const T = flick ? flickT : neonT, G = flick ? flickG : neonG;
+    let dx = bx - ax, dy = by - ay, dz = bz - az; const len = Math.hypot(dx, dy, dz) || 1e-3; dx /= len; dy /= len; dz /= len;
+    let px = 1, pz = 0;
+    if (Math.abs(dy) < 0.9) { px = -dz; pz = dx; const l = Math.hypot(px, pz); px /= l; pz /= l; }
+    const qx = dy * pz, qy = dz * px - dx * pz, qz = -dy * px;
+    const put = (g, w, ext, c) => {
+      GM[0] = dx * (len + ext); GM[1] = dy * (len + ext); GM[2] = dz * (len + ext); GM[3] = 0;
+      GM[4] = px * w; GM[5] = 0; GM[6] = pz * w; GM[7] = 0;
+      GM[8] = qx * w; GM[9] = qy * w; GM[10] = qz * w; GM[11] = 0;
+      GM[12] = (ax + bx) / 2; GM[13] = (ay + by) / 2; GM[14] = (az + bz) / 2; GM[15] = 1;
+      boxM(g, GM, c);
+    };
+    put(T, t, t, [lerp(col[0], 1, 0.5), lerp(col[1], 1, 0.5), lerp(col[2], 1, 0.5), 4]);
+    put(G, t * 3.2, t * 3, [col[0] * 0.5, col[1] * 0.5, col[2] * 0.5, 7]);
+    put(G, t * 8, t * 7, [col[0] * 0.2, col[1] * 0.2, col[2] * 0.2, 7]);
+  }
+  // Röhrenschrift: Zeichen im Raster 2×4, Linienzüge mit Punkten "xy", Züge durch | getrennt
+  const FONT = {
+    A: '00 03 14 23 20|02 22', B: '00 04 14 23 12 21 10 00|02 12', C: '20 00 04 24', D: '00 04 14 23 21 10 00', E: '20 00 04 24|02 12',
+    F: '00 04 24|02 12', G: '24 04 00 20 22 12', H: '00 04|20 24|02 22', I: '00 20|04 24|10 14', J: '04 24|14 10 00 01',
+    K: '00 04|24 02 20', L: '04 00 20', M: '00 04 12 24 20', N: '00 04 20 24', O: '00 04 24 20 00', P: '00 04 24 22 02',
+    Q: '00 04 24 21 10 00|11 20', R: '00 04 24 22 02 20', S: '24 04 02 22 20 00', T: '04 24|14 10', U: '04 00 20 24',
+    V: '04 10 24', W: '04 00 12 20 24', X: '00 24|04 20', Y: '04 12 24|12 10', Z: '04 24 00 20',
+    0: '00 04 24 20 00', 1: '03 14 10|00 20', 2: '04 24 22 02 00 20', 3: '04 24 20 00|02 22', 4: '04 02 22|24 20',
+    5: '24 04 02 22 20 00', 6: '24 04 00 20 22 02', 7: '04 24 10', 8: '00 04 24 20 00|02 22', 9: '20 24 04 02 22',
+    '/': '00 24', '+': '02 22|13 11', '-': '02 22', '.': '10 11', '!': '14 12|10 11', '$': '24 04 02 22 20 00|14 10'
+  };
+  const textUnits = (str) => str.length * 3 - 1;
+  // Schriftzug mittig bei (cx,cy,cz), Leserichtung (rx,rz), Buchstabenhöhe h
+  function neonText(str, cx, cy, cz, rx, rz, h, col, t) {
+    const s = h / 4, w = textUnits(str) * s; t = t || Math.max(0.035, h * 0.055);
+    let ox = cx - rx * w / 2, oz = cz - rz * w / 2; const oy = cy - h / 2;
+    for (const ch of str) {
+      const f = FONT[ch];
+      if (f) for (const line of f.split('|')) {
+        const pts = line.split(' ');
+        for (let k = 0; k < pts.length - 1; k++) {
+          const a = pts[k], b = pts[k + 1];
+          tube(ox + rx * a[0] * s, oy + a[1] * s, oz + rz * a[0] * s, ox + rx * b[0] * s, oy + b[1] * s, oz + rz * b[0] * s, t, col);
+        }
+      }
+      ox += rx * 3 * s; oz += rz * 3 * s;
+    }
+  }
+  // Rechteckrahmen in der Ebene aus Leserichtung (rx,rz) und Senkrechter
+  function neonRect(cx, cy, cz, rx, rz, w, h, t, col) {
+    const ax = cx - rx * w / 2, az = cz - rz * w / 2, bx = cx + rx * w / 2, bz = cz + rz * w / 2, y0 = cy - h / 2, y1 = cy + h / 2;
+    tube(ax, y0, az, bx, y0, bz, t, col); tube(ax, y1, az, bx, y1, bz, t, col);
+    tube(ax, y0, az, ax, y1, az, t, col); tube(bx, y0, bz, bx, y1, bz, t, col);
+  }
+  // Dunkle Tafel hinter einem Schild, achsparallel: Breite w entlang (rx,rz), Tiefe d entlang der Normalen
+  function signPanel(cx, cy, cz, rx, rz, w, h, d) {
+    const hx = Math.abs(rx) > 0.5 ? w / 2 : d / 2, hz = Math.abs(rx) > 0.5 ? d / 2 : w / 2;
+    box(wg, cx - hx, cy - h / 2, cz - hz, cx + hx, cy + h / 2, cz + hz, hexc('#0d0f15'));
+  }
+  // Leuchtschild an einer Fassade: Punkt (fx,fz) auf der Fassade, Normale (nx,nz)
+  function facadeSign(fx, fz, nx, nz, y, text, h, col, panel) {
+    const rx = nz, rz = -nx, w = textUnits(text) * h / 4;
+    if (panel) { signPanel(fx + nx * 0.15, y, fz + nz * 0.15, rx, rz, w + h * 1.1, h * 1.9, 0.25); neonRect(fx + nx * 0.3, y, fz + nz * 0.3, rx, rz, w + h * 0.9, h * 1.7, Math.max(0.035, h * 0.045), col); }
+    neonText(text, fx + nx * 0.34, y, fz + nz * 0.34, rx, rz, h, col);
+    addLight(fx + nx * 1.6, y, fz + nz * 1.6, col, 8 + h * 4, 1.6);
+  }
+  // Senkrechtes Hängeschild, das von der Fassade absteht (lesbar von beiden Straßenseiten)
+  function bladeSign(fx, fz, nx, nz, top, text, h, col) {
+    const rx = nz, rz = -nx, L = text.length * h * 1.35, cx = fx + nx * 0.95, cz = fz + nz * 0.95, cy = top - L / 2;
+    const hx = Math.abs(nx) > 0.5 ? 0.6 : 0.06, hz = Math.abs(nx) > 0.5 ? 0.06 : 0.6;
+    box(wg, cx - hx, top - L - 0.25, cz - hz, cx + hx, top + 0.25, cz + hz, hexc('#0d0f15'));
+    box(wg, fx + nx * 0.3 - 0.04, top - 0.05, fz + nz * 0.3 - 0.04, fx + nx * 0.3 + 0.04 + nx * 0.4, top + 0.05, fz + nz * 0.3 + 0.04 + nz * 0.4, C.pole);
+    neonRect(cx, cy, cz, nx, nz, 1.4, L + 0.7, 0.04, col);
+    addLight(cx + nx * 0.6, cy, cz + nz * 0.6, col, 10, 1.6);
+    for (const sd of [-1, 1]) for (let k = 0; k < text.length; k++) {
+      neonText(text[k], cx + rx * sd * 0.09, top - h / 2 - 0.1 - k * h * 1.35, cz + rz * sd * 0.09, -nx * sd, -nz * sd, h, col);
+    }
+  }
+  // Leuchtkante um ein Dach (achsparallel)
+  function roofLine(x0, z0, x1, z1, y, col, t) {
+    t = t || 0.06;
+    tube(x0, y, z0, x1, y, z0, t, col); tube(x0, y, z1, x1, y, z1, t, col);
+    tube(x0, y, z0, x0, y, z1, t, col); tube(x1, y, z0, x1, y, z1, t, col);
+  }
+  const holos = [];
   function lamp(x, z, ax, az) {
     box(wg, x - 0.08, 0, z - 0.08, x + 0.08, 6.4, z + 0.08, C.pole);
     const ex = x + ax * 1.6, ez = z + az * 1.6;
     box(wg, Math.min(x, ex) - 0.06, 6.3, Math.min(z, ez) - 0.06, Math.max(x, ex) + 0.06, 6.42, Math.max(z, ez) + 0.06, C.pole);
     box(wg, ex - 0.25, 6.12, ez - 0.25, ex + 0.25, 6.3, ez + 0.25, C.lamp);
     lamps.push({ x: ex, z: ez });
+    addLight(ex, 5.6, ez, [0.62, 0.86, 1], 14, 1.25, true);
   }
   function palm(x, z, h) {
     let px = x, pz = z; const lean = sr(-0.5, 0.5), lz = sr(-0.5, 0.5);
@@ -363,15 +477,28 @@ function buildGame(canvas, radar, root, ui) {
     box(wg, x0 - 0.15, h, z0 - 0.15, x1 + 0.15, h + 0.5, z1 + 0.15, hexc('#5a5a58'));
     addCol(x0, z0, x1, z1, h + 0.5);
   }
+  const SHOP_SIGN = { waffen: 'WAFFEN', spaeti: '24/7', lack: 'SPRAY+WEG', kleider: 'FRESH FITS', hospital: 'KLINIK', police: 'POLIZEI', export: 'EXPORT' };
+  const SHOP_NEON = { waffen: '#ff3355', spaeti: '#39ff88', lack: '#22e6ff', kleider: '#ff2bd6', hospital: '#ff4060', police: '#3d7bff', export: '#ff8a1f' };
   // Laden mit Front nach Süden (-z) zur Straße
   function shopBuilding(i, j, kind, name, wallCol, signCol, blip, w, d) {
     const b = blockRect(i, j); w = w || 18; d = d || 14;
     const x0 = b.cx - w / 2, x1 = b.cx + w / 2, z0 = b.z0 + SW + 1, z1 = z0 + d;
     building(x0, z0, x1, z1, 7, wallCol, false);
-    box(wg, b.cx - w * 0.38, 4.8, z0 - 0.4, b.cx + w * 0.38, 6.4, z0 - 0.05, hexc(signCol, 4));
-    box(wg, b.cx - 1.3, 0.15, z0 - 0.08, b.cx + 1.3, 3.0, z0 + 0.02, hexc('#1b1e22'));
-    box(wg, b.cx - 4.5, 1.0, z0 - 0.06, b.cx - 2.0, 3.2, z0 + 0.02, hexc('#9fc4d6', 4));
-    box(wg, b.cx + 2.0, 1.0, z0 - 0.06, b.cx + 4.5, 3.2, z0 + 0.02, hexc('#9fc4d6', 4));
+    // Neonschild über dem Eingang
+    const nc = hexc(SHOP_NEON[kind]), text = SHOP_SIGN[kind], avail = w * 0.8 - 1.2;
+    const lh = Math.min(1.1, avail * 4 / textUnits(text));
+    signPanel(b.cx, 5.6, z0 - 0.2, 1, 0, w * 0.8, 2.0, 0.3);
+    neonRect(b.cx, 5.6, z0 - 0.4, -1, 0, w * 0.8 - 0.3, 1.75, 0.055, nc);
+    neonText(text, b.cx, 5.6, z0 - 0.45, -1, 0, lh, nc);
+    addLight(b.cx, 5.2, z0 - 2.2, nc, 17, 1.6);
+    if (kind === 'hospital') for (const sx of [-1, 1]) { const px = b.cx + sx * (w * 0.4 - 1.4); tube(px - 0.45, 5.6, z0 - 0.45, px + 0.45, 5.6, z0 - 0.45, 0.07, nc); tube(px, 5.15, z0 - 0.45, px, 6.05, z0 - 0.45, 0.07, nc); }
+    // Leuchtkante am Dach und über den Schaufenstern
+    roofLine(x0 - 0.15, z0 - 0.15, x1 + 0.15, z1 + 0.15, 7.55, nc, 0.05);
+    tube(b.cx - 4.6, 3.35, z0 - 0.1, b.cx + 4.6, 3.35, z0 - 0.1, 0.04, hexc('#22e6ff'));
+    box(wg, b.cx - 1.3, 0.15, z0 - 0.08, b.cx + 1.3, 3.0, z0 + 0.02, hexc('#14161c'));
+    box(wg, b.cx - 4.5, 1.0, z0 - 0.06, b.cx - 2.0, 3.2, z0 + 0.02, hexc('#2c6f8c', 4));
+    box(wg, b.cx + 2.0, 1.0, z0 - 0.06, b.cx + 4.5, 3.2, z0 + 0.02, hexc('#2c6f8c', 4));
+    if (kind === 'spaeti' || kind === 'waffen') { flick = kind === 'spaeti'; neonText('OPEN', b.cx - 3.25, 2.3, z0 - 0.12, -1, 0, 0.45, hexc('#ff2bd6')); flick = false; }
     shops.push({ kind: kind, name: name, x: b.cx, z: b.z0 + 1.6, r: 1.6, color: rgb(signCol), blip: blip });
   }
   // Garage zum Reinfahren (offen nach Süden)
@@ -384,12 +511,86 @@ function buildGame(canvas, radar, root, ui) {
     box(wg, x0, 0.1, z1 - 0.6, x1, h, z1, wc); addCol(x0, z1 - 0.6, x1, z1, h);
     box(wg, x0, h, z0, x1, h + 0.5, z1, hexc('#55524c'));
     box(wg, x0 + 0.6, 0.16, z0, x1 - 0.6, 0.18, z1 - 0.6, hexc('#4a4c50'));
-    box(wg, b.cx - 6, h - 1.6, z0 - 0.35, b.cx + 6, h - 0.2, z0, hexc(signCol, 4));
+    const nc = hexc(SHOP_NEON[kind]), text = SHOP_SIGN[kind];
+    signPanel(b.cx, h - 0.9, z0 - 0.18, 1, 0, 12, 1.5, 0.35);
+    neonText(text, b.cx, h - 0.9, z0 - 0.42, -1, 0, Math.min(0.95, 11 * 4 / textUnits(text)), nc);
+    addLight(b.cx, h - 1.2, z0 - 2, nc, 15, 1.6);
+    // Leuchtrahmen um die Einfahrt
+    tube(x0 + 0.3, 0.2, z0 - 0.05, x0 + 0.3, h, z0 - 0.05, 0.06, nc); tube(x1 - 0.3, 0.2, z0 - 0.05, x1 - 0.3, h, z0 - 0.05, 0.06, nc);
+    tube(x0 + 0.3, h + 0.55, z0 - 0.05, x1 - 0.3, h + 0.55, z0 - 0.05, 0.06, nc);
     shops.push({ kind: kind, name: name, x: b.cx, z: z0 + 6, r: 4, color: rgb(signCol), blip: blip, drive: true });
   }
 
+  // Neon-Deko an normalen Gebäuden
+  const WORDS = ['BAR', 'HOTEL', 'RAMEN', 'CYBER', 'CLUB', 'SUSHI', '24H', 'TECH', 'DATA', 'OPEN', 'PIZZA', 'DRINKS', 'ROBO', 'NOODLES', 'CASINO',
+    'VR', 'NEON', 'KARAOKE', 'DISCO', 'KEBAB', 'PIXEL', 'SYNTH', 'MOTEL', 'TATTOO', 'ARCADE', 'BYTE', 'NOVA', 'ZERO', 'LOUNGE', 'CHROME', 'IMBISS', 'KINO'];
+  const BLADE = ['BAR', 'HOTEL', 'RAMEN', 'CLUB', 'SUSHI', 'NEON', 'MOTEL', 'KINO', 'DISCO', 'TECH', 'VR', '24H'];
+  const BRANDS = ['ZENTEK', 'NOVA CORP', 'SYNTHCO', 'HYPERION', 'OMNI', 'KAIRO', 'NEUROLINK', 'ARASHI', 'VOLTA', 'HELIX'];
+  // zur Straße zeigende Fassaden eines Gebäudes im Block b: [Mitte x, Mitte z, nx, nz, Breite]
+  function facades(b, x0, z0, x1, z1) {
+    const out = [];
+    if (z0 - b.z0 < 9) out.push([(x0 + x1) / 2, z0, 0, -1, x1 - x0]);
+    if (b.z1 - z1 < 9) out.push([(x0 + x1) / 2, z1, 0, 1, x1 - x0]);
+    if (x0 - b.x0 < 9) out.push([x0, (z0 + z1) / 2, -1, 0, z1 - z0]);
+    if (b.x1 - x1 < 9) out.push([x1, (z0 + z1) / 2, 1, 0, z1 - z0]);
+    return out;
+  }
+  function decorate(b, x0, z0, x1, z1, h, dist) {
+    const fs = facades(b, x0, z0, x1, z1);
+    if (dist === 'downtown' || dist === 'altstadt' || dist === 'hafen') {
+      for (const f of fs) {
+        const fx = f[0], fz = f[1], nx = f[2], nz = f[3], fw = f[4], rx = nz, rz = -nx, r = nr();
+        if (r < 0.5) {
+          const word = dist === 'hafen' ? 'DOCK ' + Math.floor(nrr(1, 10)) : npick(WORDS), lh = nrr(0.8, 1.5), tw = textUnits(word) * lh / 4;
+          if (tw > fw - 2.5) continue;
+          const y = Math.min(h - lh * 1.2, nrr(3.4, 9)), off = nrr(-1, 1) * (fw - tw - 2.5) / 2;
+          flick = nr() < 0.12;
+          facadeSign(fx + rx * off, fz + rz * off, nx, nz, y, word, lh, ncol(), nr() < 0.55);
+          flick = false;
+        } else if (r < 0.8 && h > 9 && dist !== 'hafen') {
+          const word = npick(BLADE), lh = nrr(0.6, 0.85), L = word.length * lh * 1.35;
+          const off = (nr() < 0.5 ? -1 : 1) * (fw / 2 - 1.6), top = Math.min(h - 0.8, nrr(L + 3, L + 7));
+          flick = nr() < 0.1;
+          bladeSign(fx + rx * off, fz + rz * off, nx, nz, top, word, lh, ncol());
+          flick = false;
+        }
+      }
+    }
+    if (dist === 'downtown') {
+      const c = ncol(), corners = [[x0, z0], [x1, z0], [x1, z1], [x0, z1]];
+      // leuchtende Gebäudekanten und Dachkante
+      const k0 = Math.floor(nr() * 4);
+      for (let k = 0; k < (nr() < 0.5 ? 2 : 4); k++) { const p = corners[(k0 + k * 2) % 4]; tube(p[0], 1.2, p[1], p[0], h, p[1], 0.07, c); }
+      roofLine(x0 - 0.16, z0 - 0.16, x1 + 0.16, z1 + 0.16, h + 0.55, c, 0.07);
+      if (nr() < 0.45) { const c2 = ncol(), n = 1 + Math.floor(nr() * 3); for (let k = 1; k <= n; k++) roofLine(x0 - 0.05, z0 - 0.05, x1 + 0.05, z1 + 0.05, h * k / (n + 1), c2, 0.05); }
+      // Dach-Billboard oder Hologramm
+      const f = fs[0];
+      if (f && nr() < 0.45) {
+        const fx = f[0] - f[2] * 2, fz = f[1] - f[3] * 2, nx = f[2], nz = f[3], rx = nz, rz = -nx;
+        const word = npick(BRANDS), bw = Math.min(f[4] - 3, 13), bh = 4.5, by = h + 0.5 + 1.6 + bh / 2;
+        if (bw > 6) {
+          for (const sd of [-1, 1]) { const lx = fx + rx * sd * bw * 0.35, lz = fz + rz * sd * bw * 0.35; box(wg, lx - 0.15, h + 0.5, lz - 0.15, lx + 0.15, by - bh / 2, lz + 0.15, C.pole); }
+          signPanel(fx, by, fz, rx, rz, bw, bh, 0.3);
+          const bc = ncol();
+          neonRect(fx + nx * 0.2, by, fz + nz * 0.2, rx, rz, bw - 0.3, bh - 0.3, 0.08, bc);
+          addLight(fx + nx * 3, by, fz + nz * 3, bc, 22, 1.8);
+          neonText(word, fx + nx * 0.24, by + 0.35, fz + nz * 0.24, rx, rz, Math.min(2.0, (bw - 1.5) * 4 / textUnits(word)), bc);
+          tube(fx + nx * 0.24 - rx * bw * 0.3, by - 1.45, fz + nz * 0.24 - rz * bw * 0.3, fx + nx * 0.24 + rx * bw * 0.3, by - 1.45, fz + nz * 0.24 + rz * bw * 0.3, 0.06, ncol());
+        }
+      } else if (h > 40 && nr() < 0.6) {
+        const hl = { x: (x0 + x1) / 2, y: h + 7, z: (z0 + z1) / 2, s: nrr(3, 4.5), col: rgb(npick(NEON)), sp: nrr(0.4, 0.9) };
+        holos.push(hl); addLight(hl.x, hl.y, hl.z, hl.col, 22, 1.8);
+      }
+    } else if (dist === 'altstadt') {
+      if (nr() < 0.4) roofLine(x0 - 0.16, z0 - 0.16, x1 + 0.16, z1 + 0.16, h + 0.55, ncol(), 0.05);
+    } else if (dist === 'palmen' || dist === 'villen') {
+      if (nr() < 0.8) roofLine(x0 - 0.16, z0 - 0.16, x1 + 0.16, z1 + 0.16, h + 0.55, hexc(nr() < 0.5 ? '#ff2bd6' : '#22e6ff'), 0.06);
+      if (nr() < 0.5) roofLine(x0 - 0.04, z0 - 0.04, x1 + 0.04, z1 + 0.04, 0.5, hexc(nr() < 0.5 ? '#a14bff' : '#22e6ff'), 0.04);
+    }
+  }
+
   // Boden, Wasser, Straßen
-  quad(wg, -500, -1, 900, 900, -0.02, hexc('#7b8a52'));
+  quad(wg, -500, -1, 900, 900, -0.02, hexc('#3e4a38'));
   quad(wg, -500, -500, 900, -1, -0.6, C.water);
   quad(wg, 0, 0, W, W, 0, C.asphalt);
   box(wg, -1, -0.6, -1.2, W + 1, 0.0, 0, C.barrier);
@@ -436,12 +637,14 @@ function buildGame(canvas, radar, root, ui) {
     '2,0': () => garage(2, 0, 'export', 'Export-Garage', '#e2a12b', 'G')
   };
   const LOTC = { downtown: C.concrete, altstadt: C.old, palmen: C.grass, villen: C.grass, hafen: C.port };
+  const CURB = { downtown: '#22e6ff', altstadt: '#ff2bd6', palmen: '#ff6ad5', villen: '#3ff5d0', hafen: '#ff8a1f', park: '#39ff88' };
   const blocks = [];
   for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
     const b = blockRect(i, j), dist = districtOf(i, j);
     const park = (i === 5 && j === 5) || (i === 2 && j === 5);
     b.i = i; b.j = j; b.dist = park ? 'park' : dist; blocks.push(b);
     box(wg, b.x0, 0, b.z0, b.x1, 0.15, b.z1, C.side, true);
+    roofLine(b.x0 - 0.03, b.z0 - 0.03, b.x1 + 0.03, b.z1 + 0.03, 0.12, hexc(CURB[park ? 'park' : dist]), 0.03);
     quad(wg, b.x0 + SW, b.z0 + SW, b.x1 - SW, b.z1 - SW, 0.151, park ? C.grass : LOTC[dist]);
     // Laternen
     const L = [[b.x0 + 0.6, b.z0 + 0.6, -0.7, -0.7], [b.x1 - 0.6, b.z0 + 0.6, 0.7, -0.7], [b.x1 - 0.6, b.z1 - 0.6, 0.7, 0.7], [b.x0 + 0.6, b.z1 - 0.6, -0.7, 0.7],
@@ -452,7 +655,8 @@ function buildGame(canvas, radar, root, ui) {
     if (SPECIAL[key]) {
       SPECIAL[key]();
       if (dist === 'palmen' || dist === 'hafen') { palm(lx0 + 2, lz1 - 2, sr(7, 10)); palm(lx1 - 2, lz1 - 2, sr(7, 10)); }
-      else { building(lx0 + 1, lz1 - 14, lx0 + 15, lz1 - 1, sr(8, 16), spick(['#a0573f', '#b98b62', '#8f6a4f']), true); building(lx1 - 15, lz1 - 14, lx1 - 1, lz1 - 1, sr(8, 16), spick(['#c9b38c', '#7c4a3a', '#d0c2a0']), true); }
+      else { const ha = sr(8, 16), ca = spick(['#6e4a3e', '#7a6250', '#58443f']), hb = sr(8, 16), cb = spick(['#5c4b45', '#4f3f3a', '#6b5a55']); building(lx0 + 1, lz1 - 14, lx0 + 15, lz1 - 1, ha, ca, true); building(lx1 - 15, lz1 - 14, lx1 - 1, lz1 - 1, hb, cb, true);
+        decorate(b, lx0 + 1, lz1 - 14, lx0 + 15, lz1 - 1, ha, 'altstadt'); decorate(b, lx1 - 15, lz1 - 14, lx1 - 1, lz1 - 1, hb, 'altstadt'); }
       continue;
     }
     if (park) {
@@ -474,31 +678,42 @@ function buildGame(canvas, radar, root, ui) {
       for (let a = 0; a < 2; a++) for (let c = 0; c < 2; c++) {
         const sx = lx0 + a * half, sz = lz0 + c * half, fw = sr(12, 16), fd = sr(12, 16), h = sr(24, 72);
         const x0 = sx + (half - fw) / 2, z0 = sz + (half - fd) / 2;
-        const col = spick(['#8a95a3', '#6f7c8c', '#a7a196', '#57606b', '#b3b8be', '#4f6d7a']);
+        const col = spick(['#3a4250', '#2c3442', '#454a5c', '#262c38', '#4a5566', '#363048']);
         building(x0, z0, x0 + fw, z0 + fd, h, col, true);
-        if (srand() < 0.6) { const h2 = h * sr(0.15, 0.35); box(wg, x0 + 2, h + 0.5, z0 + 2, x0 + fw - 2, h + 0.5 + h2, z0 + fd - 2, hexc(col, 1)); }
-        box(wg, x0 + 1.5, h + 0.5, z0 + 1.5, x0 + 4, h + 2, z0 + 4, hexc('#6a6c70'));
+        if (srand() < 0.6) {
+          const h2 = h * sr(0.15, 0.35); box(wg, x0 + 2, h + 0.5, z0 + 2, x0 + fw - 2, h + 0.5 + h2, z0 + fd - 2, hexc(col, 1));
+          roofLine(x0 + 1.95, z0 + 1.95, x0 + fw - 1.95, z0 + fd - 1.95, h + 0.5 + h2, ncol(), 0.06);
+        }
+        box(wg, x0 + 1.5, h + 0.5, z0 + 1.5, x0 + 4, h + 2, z0 + 4, hexc('#3a3c42'));
+        decorate(b, x0, z0, x0 + fw, z0 + fd, h, 'downtown');
       }
     } else if (dist === 'altstadt') {
       for (let a = 0; a < 2; a++) for (let c = 0; c < 2; c++) {
         const sx = lx0 + a * half, sz = lz0 + c * half;
         if (srand() < 0.15) { tree(sx + half / 2, sz + half / 2); continue; }
-        building(sx + 1.2, sz + 1.2, sx + half - 1.2, sz + half - 1.2, sr(8, 20), spick(['#a0573f', '#b98b62', '#c9b38c', '#8f6a4f', '#d0c2a0', '#7c4a3a']), true);
+        const h = sr(8, 20);
+        building(sx + 1.2, sz + 1.2, sx + half - 1.2, sz + half - 1.2, h, spick(['#6e4a3e', '#5c4b45', '#7a6250', '#4f3f3a', '#6b5a55', '#58443f']), true);
+        decorate(b, sx + 1.2, sz + 1.2, sx + half - 1.2, sz + half - 1.2, h, 'altstadt');
       }
     } else if (dist === 'palmen') {
       for (let a = 0; a < 2; a++) for (let c = 0; c < 2; c++) {
         const sx = lx0 + a * half, sz = lz0 + c * half;
-        building(sx + 4, sz + 4, sx + half - 4, sz + half - 5, sr(4, 7), spick(['#e8c1a0', '#a8d5c9', '#f0d9a8', '#d7a9b8', '#c3d3e8', '#f2e6d0']), true);
+        const h = sr(4, 7);
+        building(sx + 4, sz + 4, sx + half - 4, sz + half - 5, h, spick(['#e8c1a0', '#a8d5c9', '#f0d9a8', '#d7a9b8', '#c3d3e8', '#f2e6d0']), true);
+        decorate(b, sx + 4, sz + 4, sx + half - 4, sz + half - 5, h, 'palmen');
         palm(sx + 2, sz + 2, sr(7, 11));
       }
     } else if (dist === 'villen') {
-      building(lx0 + 6, lz0 + 14, lx1 - 8, lz1 - 4, sr(6, 9), spick(['#f2efe6', '#e9dcc5', '#dfe7ea']), true);
+      const h = sr(6, 9);
+      building(lx0 + 6, lz0 + 14, lx1 - 8, lz1 - 4, h, spick(['#f2efe6', '#e9dcc5', '#dfe7ea']), true);
+      decorate(b, lx0 + 6, lz0 + 14, lx1 - 8, lz1 - 4, h, 'villen');
       box(wg, lx0 + 6, 0.15, lz0 + 3, lx0 + 20, 0.2, lz0 + 10, hexc('#d7d2c4'));
       box(wg, lx0 + 7, 0.15, lz0 + 4, lx0 + 19, 0.21, lz0 + 9, hexc('#43b7d9', 4));
       palm(lx1 - 3, lz0 + 3, sr(8, 11)); palm(lx0 + 2.5, lz1 - 2.5, sr(8, 11)); palm(lx1 - 3, lz0 + 10, sr(8, 11));
     } else if (dist === 'hafen') {
       const col = spick(['#8a8f94', '#9c6b4e', '#5f7380']);
       building(lx0 + 2, lz0 + 12, lx0 + 24, lz1 - 2, 9, col, false);
+      decorate(b, lx0 + 2, lz0 + 12, lx0 + 24, lz1 - 2, 9, 'hafen');
       for (let s = 0; s < 4; s++) box(wg, lx0 + 2 - 0.05, 1.5 + s * 2, lz0 + 12 - 0.05, lx0 + 24 + 0.05, 1.7 + s * 2, lz1 - 2 + 0.05, hexc('#4a4d50'));
       for (let s = 0; s < 5; s++) {
         const cx = lx1 - 4, cz = lz0 + 3 + s * 3.1, st = randi(1, 3);
@@ -511,11 +726,17 @@ function buildGame(canvas, radar, root, ui) {
         box(wg, lx0 + 3.5, 22, lz0 - 12, lx0 + 5.5, 23.5, lz0 + 12, yc);
         box(wg, lx0 + 3.8, 18, lz0 - 8, lx0 + 5.2, 20, lz0 - 6, hexc('#3a3d42'));
         addCol(lx0 + 4, lz0 + 3, lx0 + 5, lz0 + 10, 22);
+        // Warnlichter und Leuchtkante am Kran
+        tube(lx0 + 3.5, 23.6, lz0 - 12, lx0 + 3.5, 23.6, lz0 + 12, 0.06, hexc('#ff8a1f'));
+        tube(lx0 + 5.5, 23.6, lz0 - 12, lx0 + 5.5, 23.6, lz0 + 12, 0.06, hexc('#ff8a1f'));
+        for (const zz of [lz0 - 11.6, lz0 + 11.6]) tube(lx0 + 4.5, 23.6, zz, lx0 + 4.5, 24.0, zz, 0.18, hexc('#ff3355'));
       }
     }
   }
   const worldMesh = upload(wg);
   wg.d = null;
+  const neonTubes = upload(neonT), neonGlow = upload(neonG), flickTubes = upload(flickT), flickGlow = upload(flickG);
+  neonT.d = neonG.d = flickT.d = flickG.d = null;
   const shopOf = (kind) => shops.find((s) => s.kind === kind);
 
   // ---- Minikarte vorrendern ----
@@ -1663,7 +1884,7 @@ function buildGame(canvas, radar, root, ui) {
   // ================= Kamera & Tageszeit =================
   const camState = { yaw: Math.PI, pitch: 0.25, dist: 4.2, curDist: 4.2, eye: [0, 5, 0], dir: [0, 0, 1], lastInput: 0, aimT: 0, mode: 1 };
   const CAM_MODES = [{ n: 'Nah', k: 0.72 }, { n: 'Mittel', k: 1 }, { n: 'Weit', k: 1.45 }];
-  let clockH = 13.0, started = false, attractA = 0, gamePaused = false;
+  let clockH = 21.0, started = false, attractA = 0, gamePaused = false;
   function cycleCam() { camState.mode = (camState.mode + 1) % CAM_MODES.length; msg('Kamera: ' + CAM_MODES[camState.mode].n, 1.2); }
   function updateCamera(dt) {
     let tx, ty, tz, dist;
@@ -1707,7 +1928,7 @@ function buildGame(canvas, radar, root, ui) {
     camState.dir[0] = dx; camState.dir[1] = dy; camState.dir[2] = dz;
   }
   const L3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
-  const SKY = { dayTop: [0.30, 0.55, 0.90], dayFog: [0.74, 0.82, 0.90], duskTop: [0.32, 0.30, 0.55], duskFog: [0.98, 0.58, 0.36], nightTop: [0.02, 0.03, 0.08], nightFog: [0.06, 0.07, 0.12] };
+  const SKY = { dayTop: [0.34, 0.48, 0.72], dayFog: [0.64, 0.68, 0.78], duskTop: [0.36, 0.14, 0.52], duskFog: [0.95, 0.36, 0.55], nightTop: [0.07, 0.03, 0.16], nightFog: [0.17, 0.08, 0.25] };
   const light = { sun: [0, 1, 0], sunC: [1, 1, 1], amb: [0.4, 0.4, 0.4], fog: [0.7, 0.8, 0.9], top: [0.3, 0.5, 0.9], night: 0 };
   function updateLight() {
     const ang = (clockH - 6) / 12 * Math.PI, el = Math.sin(ang);
@@ -1719,9 +1940,9 @@ function buildGame(canvas, radar, root, ui) {
     const top = L3(L3(SKY.nightTop, SKY.dayTop, day), SKY.duskTop, dusk * 0.7);
     const fog = L3(L3(SKY.nightFog, SKY.dayFog, day), SKY.duskFog, dusk * 0.75);
     light.top = top; light.fog = fog;
-    light.sunC = el > 0 ? L3([1.0, 0.95, 0.85], [1.0, 0.6, 0.35], dusk) : [0.22, 0.27, 0.42];
+    light.sunC = el > 0 ? L3([1.0, 0.95, 0.88], [1.0, 0.45, 0.55], dusk) : [0.36, 0.33, 0.58];
     if (el > 0) light.sunC = light.sunC.map((v) => v * (0.55 + 0.45 * day));
-    light.amb = L3([0.10, 0.11, 0.18], [0.42, 0.45, 0.52], day);
+    light.amb = L3([0.24, 0.2, 0.34], [0.40, 0.42, 0.52], day);
   }
 
   // ================= Rendering =================
@@ -1753,11 +1974,16 @@ function buildGame(canvas, radar, root, ui) {
     gl.uniform3fv(U.uSun, light.sun); gl.uniform3fv(U.uSunC, light.sunC); gl.uniform3fv(U.uAmb, light.amb);
     gl.uniform3fv(U.uFog, light.fog); gl.uniform3fv(U.uCam, e);
     gl.uniform1f(U.uFogD, lerp(330, 230, light.night)); gl.uniform1f(U.uNight, light.night);
+    updatePointLights();
     // Himmel
     gl.depthMask(false);
     mIdent(MA); tr(MA, e[0], e[1], e[2]); drawMesh(skyMesh, MA, light.top, null, 1);
     gl.depthMask(true);
     drawMesh(worldMesh, IDM, null, null, 1);
+    drawMesh(neonTubes, IDM, null, null, 1);
+    const flickOn = flickerOn();
+    if (flickOn) drawMesh(flickTubes, IDM, null, null, 1);
+    for (const hl of holos) drawHolo(hl, false);
     for (const c of cars) if (visible(c.x, c.z, 4)) drawCar(c);
     for (const p of peds) if (visible(p.x, p.z, 2)) drawHuman(p);
     if (started && !player.inCar) drawHuman(player);
@@ -1776,7 +2002,6 @@ function buildGame(canvas, radar, root, ui) {
     const shadowP = (p) => { mIdent(MA); tr(MA, p.x, groundY(p.x, p.z) + 0.03, p.z); sc(MA, p.state === 'dead' ? 0.9 : 0.45, 1, p.state === 'dead' ? 0.9 : 0.45); drawMesh(diskMesh, MA, p.state === 'dead' ? [0.35, 0.02, 0.02] : SHADOW, null, p.state === 'dead' ? 0.6 : 0.35); };
     for (const p of peds) if (visible(p.x, p.z, 2)) shadowP(p);
     if (started && !player.inCar) shadowP(player);
-    if (light.night > 0.05) for (const l of lamps) if (visible(l.x, l.z, 6)) { mIdent(MA); tr(MA, l.x, 0.04, l.z); sc(MA, 4.5, 1, 4.5); drawMesh(diskMesh, MA, [1, 0.8, 0.45], null, 0.22 * light.night); }
     const marker = (x, z, r, col, h) => { mIdent(MA); tr(MA, x, groundY(x, z), z); sc(MA, r, h || 1.1, r); drawMesh(cylMesh, MA, col, null, 0.38 + Math.sin(nowT * 4) * 0.08); };
     if (started) {
       for (const s of shops) {
@@ -1795,7 +2020,53 @@ function buildGame(canvas, radar, root, ui) {
       mIdent(MA); tr(MA, q.x, q.y, q.z); ry(MA, q.x * 3); sc(MA, q.size, q.size, q.size);
       part(MA, q.col, true, clamp(q.life / q.max, 0, 1) * (q.grav > 0 ? 0.55 : 0.95));
     }
+    // Neon-Leuchten: additiv, nachts kräftiger
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+    const glowA = lerp(0.3, 1, light.night);
+    drawMesh(neonGlow, IDM, null, null, glowA);
+    if (flickOn) drawMesh(flickGlow, IDM, null, null, glowA);
+    for (const hl of holos) drawHolo(hl, true, glowA);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthMask(true); gl.disable(gl.BLEND);
+  }
+  // Die NL Lichtquellen nahe der Kamera an den Shader geben; Laternen nur nachts, Neon tagsüber schwach
+  const LP = new Float32Array(NL * 4), LC = new Float32Array(NL * 3);
+  let nearL = [], lightSelT = -1;
+  function updatePointLights() {
+    if (Math.abs(nowT - lightSelT) > 0.12) {
+      lightSelT = nowT;
+      const ex = camState.eye[0], ez = camState.eye[2];
+      for (const l of lightSrc) l.s = Math.hypot(l.x - ex, l.z - ez) - l.r * 0.6;
+      nearL = lightSrc.filter((l) => l.s < 70).sort((a, b) => a.s - b.s).slice(0, NL);
+    }
+    const kn = lerp(0.15, 1, light.night), kl = light.night;
+    LP.fill(0); LC.fill(0);
+    nearL.forEach((l, i) => {
+      const k = l.neon ? kn : kl;
+      LP[i * 4] = l.x; LP[i * 4 + 1] = l.y; LP[i * 4 + 2] = l.z; LP[i * 4 + 3] = l.r;
+      LC[i * 3] = l.c[0] * k; LC[i * 3 + 1] = l.c[1] * k; LC[i * 3 + 2] = l.c[2] * k;
+    });
+    gl.uniform4fv(U.uLP, LP); gl.uniform3fv(U.uLC, LC);
+  }
+  // Flackernde Schilder: meist an, ab und zu kurze Aussetzer
+  function flickerOn() {
+    const t = nowT * 9, k = Math.floor(t);
+    const n = Math.sin(k * 12.9898) * 43758.5453; const r = n - Math.floor(n);
+    return Math.sin(nowT * 0.7) > -0.6 ? r > 0.06 : r > 0.55;
+  }
+  // Hologramm: schwebender, rotierender Drahtwürfel mit Ring
+  function drawHolo(hl, glow, a) {
+    if (!visible(hl.x, hl.z, 10)) return;
+    mIdent(MA); tr(MA, hl.x, hl.y + Math.sin(nowT * 1.3 + hl.x) * 0.4, hl.z); ry(MA, nowT * hl.sp); rx(MA, 0.6); rz(MA, 0.62);
+    const s = hl.s, t = glow ? 0.45 : 0.09;
+    for (let ax = 0; ax < 3; ax++) for (const s1 of [-0.5, 0.5]) for (const s2 of [-0.5, 0.5]) {
+      mCopy(MB, MA);
+      const o = [0, 0, 0]; o[(ax + 1) % 3] = s1 * s; o[(ax + 2) % 3] = s2 * s; tr(MB, o[0], o[1], o[2]);
+      const k = [t, t, t]; k[ax] = s + t; sc(MB, k[0], k[1], k[2]);
+      if (glow) drawMesh(unitGlow, MB, hl.col, null, a * 0.35); else part(MB, hl.col, true);
+    }
+    mIdent(MB); tr(MB, hl.x, hl.y - s * 1.1, hl.z); sc(MB, s * 0.9, 0.06, s * 0.9);
+    if (glow) drawMesh(cylMesh, MB, hl.col, null, a * 0.25);
   }
 
   // ================= Radar =================

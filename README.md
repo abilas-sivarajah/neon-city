@@ -4,7 +4,7 @@ Eine Third-Person-Crime-Sandbox im Browser, inspiriert von GTA: San Andreas und 
 
 ## Features
 
-- **Offene 3D-Stadt** mit fünf Vierteln: Downtown, Altstadt, Palmenhain, Villenhügel und Hafenviertel. Mit Tag-Nacht-Wechsel, beleuchteten Fenstern und Straßenlaternen.
+- **Offene 3D-Stadt** mit fünf Vierteln: Downtown, Altstadt, Palmenhain, Villenhügel und Hafenviertel. Cyberpunk-Look mit Neonschildern an jedem Laden, Leuchtreklamen, Hängeschildern, Dach-Billboards, Hologrammen und flackernden Röhren. Mit Tag-Nacht-Wechsel (Start am Abend), bunt beleuchteten Fenstern und LED-Straßenlaternen.
 - **Autos klauen und fahren:** sechs Fahrzeugtypen, Verkehr mit KI, Driften mit der Handbremse, Schaden, Brände und Explosionen.
 - **Läden:** Waffenladen (Pistole, Uzi, Schrotflinte, Sturmgewehr, Schutzweste), Späti, Kleiderladen und Klinik.
 - **NPCs:** Passanten zum Ansprechen und Ausrauben, die bei Gefahr flüchten.
